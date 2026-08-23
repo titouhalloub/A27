@@ -1,0 +1,27 @@
+# --- Python ----------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+*.egg
+
+# --- Environment / secrets -------------------------------------------
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# --- Database ----------------------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+
+# --- OS / editors ------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
