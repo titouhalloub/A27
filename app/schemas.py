@@ -47,8 +47,10 @@ class SukukExtraction(BaseModel):
     certificate_title: str | None = None
     total_size: float = Field(gt=0, description="Issuance size in base currency")
     currency: str = Field(min_length=3, max_length=8)
-    contract_type: ShariahContractType = Field(
-        description="Murabaha/Ijara/Musharakah/Wakalah"
+    contract_type: ShariahContractType | None = Field(
+        default=None,
+        description="Murabaha/Ijara/Musharakah/Wakalah. None when unparseable, "
+        "so the compliance gateway can flag it instead of masking a default.",
     )
     profit_rate: float | None = Field(default=None, ge=0, le=0.5)
     rental_rate: float | None = Field(default=None, ge=0, le=0.5)

@@ -14,6 +14,7 @@ from app.models.enums import (
     DocumentType,
     IngestionSource,
     LedgerEntryType,
+    ShariahContractType,
     ShariahReviewStatus,
 )
 from app.models.orm import Document, Instrument, LedgerEntry
@@ -112,6 +113,20 @@ def process_document(session: Session, instrument: Instrument,
         Document.instrument_id == instrument.id,
         Document.id != doc.id,
     ).all()
+
+    # Carry the extracted Shariah-relevant fields onto the instrument so the
+    # compliance gateway evaluates the REAL extracted record — not a manually
+    # pre-populated one. Without this, an otherwise-clean sukuk is wrongly
+    # flagged noncompliant because contract type / asset backing never land on
+    # the instrument, and (silently) any declared contract would not reach the
+    # instrument either.
+    data = (outcome.extracted_data or {}).get("data", {})
+    contract = data.get("contract_type")
+    if contract is not None:
+        instrument.shariah_contract_type = ShariahContractType(contract)
+    if data.get("asset_description"):
+        instrument.underlying_asset_description = data["asset_description"]
+
     decision = gateway.evaluate(instrument, [doc, *prior_docs])
     instrument.shariah_review_status = decision.outcome
 

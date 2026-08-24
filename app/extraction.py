@@ -83,7 +83,17 @@ def extract_sukuk(text: str) -> tuple[SukukExtraction | None, float]:
     cur = (_grep(_CURRENCY, text) or "USD").upper()[:3]
     profit_raw = _grep(r"(?:profit rate)[\s:]*([\d.]+)\s*%?", text)
     fatwa = _grep(r"(?:fatwa[^:\n]*|shariah[^:\n]*)[\s:]+([^\n]{3,150})", text)
-    ctype = _grep(r"(?:contract|structure)[\s:]+(murabaha|ijara|musharakah|wakalah)", text)
+    ctype = _grep(
+        r"(?:contract|structure)[\s:]+(?:al-)?(murabaha|ijara|musharakah|wakalah)",
+        text,
+    )
+    # Capture the declared underlying asset so the pipeline can carry it onto
+    # Instrument.underlying_asset_description — the actual asset-backing
+    # evidence — instead of silently dropping it before compliance review.
+    asset_description = _grep(
+        r"(?:underlying asset|asset description|collateral)[\s:]+([^\n]{3,200})",
+        text,
+    )
 
     present = [issuer is not None, total is not None, profit_raw is not None, fatwa is not None]
     confidence = round(sum(bool(p) for p in present) / len(present), 3)
@@ -96,9 +106,15 @@ def extract_sukuk(text: str) -> tuple[SukukExtraction | None, float]:
             issuer_name=issuer,
             total_size=total,
             currency=cur,
-            contract_type=ShariahContractType(ctype) if ctype else ShariahContractType.MURABAHA,
+            # No silent default: an unparseable contract type stays None and is
+            # surfaced as a blocking finding by shariah_contract_type_declared,
+            # rather than being masked as a confirmed Murabaha.
+            # _grep preserves original case (e.g. "Ijara"); the enum values are
+            # lowercase, so normalise before constructing.
+            contract_type=ShariahContractType(ctype.lower()) if ctype else None,
             profit_rate=round(float(profit_raw) / 100.0, 4) if profit_raw else None,
             fatwa_reference=fatwa,
+            asset_description=asset_description,
         )
     except Exception:
         return None, confidence

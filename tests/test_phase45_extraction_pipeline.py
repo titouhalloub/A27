@@ -33,6 +33,7 @@ Total Issue Size: USD 500,000,000
 Structure: al-Ijara
 Profit Rate: 4.25% per annum
 Shariah Committee: Approved per fatwa reference FA-2024-011
+Underlying Asset: Solar plant and transmission assets
 """
 
 BAD_LOAN_TEXT = """This is a restaurant menu.
@@ -54,6 +55,27 @@ def test_phase4_malformed_routes_to_review():
     outcome = run_extraction(BAD_LOAN_TEXT, DocumentType.LOAN_AGREEMENT.value)
     assert outcome.routed_to_review is True
     assert outcome.extraction is None
+
+
+def test_sukuk_extraction_parses_al_ijara_without_silent_default():
+    # "Structure: al-Ijara" must parse to IJARA, not fall back to MURABAHA.
+    outcome = run_extraction(SUKUK_TEXT, DocumentType.SUKUK_CERTIFICATE.value)
+    assert outcome.extraction is not None
+    data = outcome.extracted_data["data"]
+    assert data["contract_type"] == ShariahContractType.IJARA
+    assert data["asset_description"], "underlying asset must be captured"
+    # A contract type that genuinely cannot be parsed must stay None (so the
+    # compliance gateway can flag it) — never silently masked as MURABAHA.
+    unparseable = run_extraction(
+        "SUKUK CERTIFICATE\nIssuer: Gulf Finance Holdings Ltd\n"
+        "Total Issue Size: USD 100,000,000\n"
+        "Structure: lease-to-own hybrid instrument\n"
+        "Profit Rate: 3% \nShariah: fatwa ref F-1\n",
+        DocumentType.SUKUK_CERTIFICATE.value,
+    )
+    assert unparseable.extraction is not None
+    assert unparseable.extraction.contract_type is None
+    assert unparseable.extracted_data["data"]["contract_type"] is None
 
 
 def test_phase5_traditional_loan_pipeline(db):
@@ -91,8 +113,9 @@ def test_phase5_islamic_sukuk_pipeline_pending_review(db):
     instr = make_instrument(
         txn_type=TransactionType.SUKUK,
         mode=ComplianceMode.ISLAMIC,
-        shariah_contract_type=ShariahContractType.IJARA,
-        underlying_asset_id="asset-500M",
+        # NOTE: shariah_contract_type / underlying_asset_* are intentionally
+        # NOT pre-filled here. They must be derived from the extraction by the
+        # pipeline; this test proves that wiring, not a manually-built fixture.
         type_specific_data={"profit_rate": 0.0425},
     )
     session.add(instr)
@@ -112,10 +135,14 @@ def test_phase5_islamic_sukuk_pipeline_pending_review(db):
     session.refresh(instr)
 
     # Islamic track: a clean sukuk lands in PENDING_SCHOLAR_REVIEW, never
-    # auto-approved — the same pipeline code, different configuration.
+    # auto-approved — the same pipeline code, different configuration. This
+    # now exercises the wiring of contract_type / asset_description from the
+    # extraction onto the instrument.
     assert result.outcome == ShariahReviewStatus.PENDING_SCHOLAR_REVIEW
     assert instr.shariah_review_status == ShariahReviewStatus.PENDING_SCHOLAR_REVIEW
     assert instr.shariah_review_status.value != "scholar_approved"
+    assert instr.shariah_contract_type == ShariahContractType.IJARA
+    assert instr.underlying_asset_description
     assert result.document.document_type == DocumentType.SUKUK_CERTIFICATE
     assert result.document.ingestion_source == IngestionSource.NATIVE_EXTRACTION
     assert not result.routed
