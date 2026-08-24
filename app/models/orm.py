@@ -7,8 +7,7 @@ No-self-certification guarantee
 ------------------------------
 ``ShariahReviewStatus.SCHOLAR_APPROVED`` / ``SCHOLAR_REJECTED`` are human-only.
 The ORM models enforce this *at the type level*: the ``shariah_review_status``
-column can only be assigned values in ``ShariahReviewStatus.SYSTEM_SETTABLE``
-through ordinary ORM writes, because the ``human_review`` relationship exposes
+column can only be assigned values in ``SYSTEM_SETTABLE`` through ordinary ORM writes, because the ``human_review`` relationship exposes
 ``set_shariah_review_status()`` as the *only* path to the human-only states,
 and that path requires an explicit ``reviewer_id``.
 
@@ -46,6 +45,8 @@ from app.models.enums import (
     TransactionType,
     ShariahContractType,
     ShariahReviewStatus,
+    SYSTEM_SETTABLE,
+    HUMAN_ONLY,
 )
 
 # ---------------------------------------------------------------------------
@@ -135,7 +136,7 @@ class Instrument(Base):
             if not isinstance(value, ShariahReviewStatus)
             else value
         )
-        if value in ShariahReviewStatus.HUMAN_ONLY:
+        if value in HUMAN_ONLY:
             raise ShariahReviewValidationError(
                 f"Cannot set {value!r} on Instrument {self.id!r} outside an "
                 "explicit human review endpoint (reviewer_id required)."
@@ -199,7 +200,7 @@ class Document(Base):
             if not isinstance(value, ShariahReviewStatus)
             else value
         )
-        if value in ShariahReviewStatus.HUMAN_ONLY:
+        if value in HUMAN_ONLY:
             raise ShariahReviewValidationError(
                 f"Cannot set {value!r} on Document {self.id!r}: only a human "
                 "reviewer may approve/reject (use the review endpoint)."

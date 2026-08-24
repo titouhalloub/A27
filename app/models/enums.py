@@ -61,12 +61,27 @@ class ShariahReviewStatus(str, Enum):
     SCHOLAR_APPROVED = "scholar_approved"
     SCHOLAR_REJECTED = "scholar_rejected"
 
-    # System may set these on its own authority:
-    SYSTEM_SETTABLE = frozenset(
-        {NOT_APPLICABLE, SYSTEM_FLAGGED_NONCOMPLIANT, PENDING_SCHOLAR_REVIEW}
-    )
-    # Only a human reviewer may set these:
-    HUMAN_ONLY = frozenset({SCHOLAR_APPROVED, SCHOLAR_REJECTED})
+
+# ---------------------------------------------------------------------------
+# These are module-level helper constants, NOT enum members. They are defined
+# *outside* the Enum body on purpose: Python's Enum machinery turns any
+# non-method assignment inside the class body into another enum member, which
+# would silently make these "helper sets" phantom members with meaningless
+# frozenset-string values. That was a real safety bug in the ORM validator.
+# ---------------------------------------------------------------------------
+
+# The system may set these on its own authority (ORM @validates guard allows):
+SYSTEM_SETTABLE = frozenset(
+    {
+        ShariahReviewStatus.NOT_APPLICABLE,
+        ShariahReviewStatus.SYSTEM_FLAGGED_NONCOMPLIANT,
+        ShariahReviewStatus.PENDING_SCHOLAR_REVIEW,
+    }
+)
+# Only a human reviewer may set these (ORM @validates guard blocks these):
+HUMAN_ONLY = frozenset(
+    {ShariahReviewStatus.SCHOLAR_APPROVED, ShariahReviewStatus.SCHOLAR_REJECTED}
+)
 
 
 class IngestionSource(str, Enum):
