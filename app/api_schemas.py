@@ -1,0 +1,104 @@
+"""API-layer request/response schemas -- separate from the extraction schemas in
+app/schemas.py, which model document data, not HTTP payloads."""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from app.models.enums import (
+    ComplianceMode,
+    DocumentType,
+    ShariahContractType,
+    ShariahReviewStatus,
+    TransactionType,
+)
+
+
+class InstrumentCreate(BaseModel):
+    transaction_type: TransactionType
+    compliance_mode: ComplianceMode
+    issuer_name: str
+    issuer_type: str = Field(..., description="Corporate, SPV, Fund, Government")
+    amount: float
+    currency: str = Field(min_length=3, max_length=8)
+    maturity_date: datetime | None = None
+
+
+class InstrumentOut(BaseModel):
+    id: str
+    transaction_type: TransactionType
+    compliance_mode: ComplianceMode
+    issuer_name: str
+    amount: float
+    currency: str
+    shariah_contract_type: ShariahContractType | None
+    shariah_review_status: ShariahReviewStatus
+    underlying_asset_description: str | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DocumentSubmit(BaseModel):
+    """MVP intake: raw text, not a file upload -- OCR/file handling is a
+    separate, already-built concern (app/ocr.py) this endpoint can grow into
+    without changing its shape."""
+    text: str = Field(..., min_length=1)
+    filename: str = "document.txt"
+
+
+class EvidenceDocumentSubmit(BaseModel):
+    """For supporting/evidence documents (fatwas, KYC, side letters) that the
+    compliance gateway needs *attached and typed*, not extracted -- there is
+    no LoanExtraction-style schema for a fatwa, and there shouldn't be one.
+    """
+    text: str = Field(..., min_length=1)
+    document_type: DocumentType
+    filename: str = "evidence.txt"
+
+
+class DocumentOut(BaseModel):
+    id: str
+    instrument_id: str
+    filename: str
+    document_type: DocumentType
+    classification_confidence: float
+    extraction_confidence: float
+    extraction_schema_name: str | None = None
+    ingestion_source: str
+    status: str
+    shariah_review_status: ShariahReviewStatus
+    error_message: str | None
+    uploaded_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PipelineRunOut(BaseModel):
+    document: DocumentOut
+    instrument: InstrumentOut
+    outcome: ShariahReviewStatus
+    routed_to_review: bool
+
+
+class HumanReviewRequest(BaseModel):
+    reviewer_id: str = Field(..., min_length=1)
+    decision: str = Field(..., pattern="^(approved|rejected)$")
+    notes: str = ""
+
+
+class LedgerEntryOut(BaseModel):
+    id: str
+    entry_type: str
+    instrument_id: str | None
+    document_id: str | None
+    payload: dict[str, Any]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ErrorOut(BaseModel):
+    detail: str

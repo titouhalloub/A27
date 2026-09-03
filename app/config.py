@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     document_encryption_key: str = ""  # base64 32-byte Fernet key
     pii_retention_days: int = 2557  # 7 years
 
+    # --- API auth -------------------------------------------------------
+    # Comma-separated allowlist of API keys. Empty means the API fails
+    # closed (503 on every route) rather than silently open -- see
+    # app.main.require_api_key.
+    api_keys: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
