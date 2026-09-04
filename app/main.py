@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi import Depends, FastAPI, File, HTTPException, Security, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from sqlalchemy import select
@@ -38,6 +38,7 @@ from app.api_schemas import (
     InvestorPortfolioOut,
     LedgerEntryOut,
     PipelineRunOut,
+    PipelineUploadOut,
     PortfolioHoldingOut,
     SecurityCreate,
     SecurityOut,
@@ -64,6 +65,7 @@ from app.models.orm import (
     Security as SecurityModel,
 )
 from app.pipeline import process_document
+from app.ocr import TextExtractionError, UnsupportedFileType, UploadTooLarge, text_from_upload
 from app.review import ShariahReviewError, submit_human_review_instrument
 
 
@@ -217,6 +219,60 @@ def submit_document(
         instrument=InstrumentOut.model_validate(instrument),
         outcome=result.outcome,
         routed_to_review=result.routed,
+    )
+
+
+@app.post(
+    "/instruments/{instrument_id}/documents/upload",
+    response_model=PipelineUploadOut,
+    responses={
+        401: {"model": ErrorOut},
+        404: {"model": ErrorOut},
+        400: {"model": ErrorOut},
+        413: {"model": ErrorOut},
+        422: {"model": ErrorOut},
+    },
+)
+def upload_document(
+    instrument_id: str,
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+    _: str = Depends(require_api_key),
+) -> PipelineUploadOut:
+    """Real-document intake: PDF / TXT / MD / HTML / image upload. The
+    file's embedded text layer is read first; scans fall back to Tesseract
+    OCR (the accepted MVP trade-off, stated in app.ocr). Everything
+    downstream -- classification, extraction, compliance, ledger -- is the
+    same pipeline the text endpoint feeds. Unparseable documents fail loudly
+    (422) with the reason; the pipeline never guesses."""
+    instrument = session.get(Instrument, instrument_id)
+    if instrument is None:
+        raise HTTPException(status_code=404, detail=f"Instrument {instrument_id!r} not found")
+
+    try:
+        text = text_from_upload(file)
+    except UnsupportedFileType as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except UploadTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except TextExtractionError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{exc} The document could not be parsed, so nothing was "
+            "classified or extracted -- no guessing.",
+        ) from exc
+
+    result = process_document(
+        session, instrument, ComplianceGateway(), text, filename=file.filename or "upload"
+    )
+    session.refresh(instrument)
+
+    return PipelineUploadOut(
+        document=DocumentOut.model_validate(result.document),
+        instrument=InstrumentOut.model_validate(instrument),
+        outcome=result.outcome,
+        routed_to_review=result.routed,
+        extracted_text=text,
     )
 
 

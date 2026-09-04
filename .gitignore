@@ -25,3 +25,6 @@ dist/
 Thumbs.db
 .idea/
 .vscode/
+
+# --- Local runtime artifacts -------------------------------------------
+_server.pid

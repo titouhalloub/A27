@@ -70,6 +70,9 @@ main { max-width: 1200px; margin: 0 auto; padding: 0 28px 80px; }
   .example-chip:hover { border-color: var(--sand); }
   .example-chip.active { border-color: var(--gold); color: var(--gold-soft); }
 
+  .upload-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .upload-name { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--teal-soft); }
+
   textarea#doc-text {
     width: 100%; min-height: 180px; background: var(--ink); border: 1px solid var(--line);
     color: var(--paper); border-radius: 6px; padding: 14px; font-family: 'IBM Plex Mono', monospace;
@@ -219,7 +222,13 @@ main { max-width: 1200px; margin: 0 auto; padding: 0 28px 80px; }
 
     <div class="examples" id="examples"></div>
 
-    <textarea id="doc-text" placeholder="Paste a loan agreement, sukuk certificate, or term sheet here..."></textarea>
+    <div class="upload-row">
+      <input type="file" id="doc-file" accept=".txt,.md,.html,.htm,.pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp" hidden />
+      <button class="btn ghost" id="upload-btn">Upload a file</button>
+      <span class="upload-name" id="file-name"></span>
+    </div>
+
+    <textarea id="doc-text" placeholder="...or paste a loan agreement, sukuk certificate, or term sheet here..."></textarea>
 
     <div class="run-row">
       <div class="compliance-toggle">
@@ -348,6 +357,7 @@ let API_KEY = '';
 let selectedMode = 'traditional';
 let currentInstrumentId = null;
 let lastDocText = '';
+let selectedFile = null;
 
 const EXAMPLES = {
   'Clean loan': {
@@ -414,6 +424,12 @@ function setMode(mode) {
 document.getElementById('mode-traditional').onclick = () => setMode('traditional');
 document.getElementById('mode-islamic').onclick = () => setMode('islamic');
 
+document.getElementById('upload-btn').onclick = () => document.getElementById('doc-file').click();
+document.getElementById('doc-file').onchange = (e) => {
+  selectedFile = e.target.files && e.target.files[0] ? e.target.files[0] : null;
+  document.getElementById('file-name').textContent = selectedFile ? selectedFile.name : '';
+};
+
 document.getElementById('conn-toggle').onclick = () => {
   document.getElementById('settings').classList.toggle('open');
 };
@@ -460,9 +476,14 @@ function hideError() {
 }
 
 async function apiCall(path, opts) {
+  const isForm = opts && opts.body instanceof FormData;
   const r = await fetch(`${API_BASE}${path}`, {
     ...opts,
-    headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY, ...(opts && opts.headers) }
+    headers: {
+      ...(isForm ? {} : { 'Content-Type': 'application/json' }),
+      'X-API-Key': API_KEY,
+      ...(opts && opts.headers)
+    }
   });
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
@@ -471,7 +492,7 @@ async function apiCall(path, opts) {
   return r.json();
 }
 
-async function runOnExistingInstrument(instrumentId, text, useExistingInstrument) {
+async function runOnExistingInstrument(instrumentId, text, useExistingInstrument, file) {
   resetSteps();
   document.getElementById('results').classList.remove('show');
   const start = performance.now();
@@ -500,10 +521,16 @@ async function runOnExistingInstrument(instrumentId, text, useExistingInstrument
 
     setStep('extract', 'active');
     const t1 = performance.now();
-    const runResult = await apiCall(`/instruments/${iid}/documents`, {
-      method: 'POST',
-      body: JSON.stringify({ text, filename: 'live-demo.txt' })
-    });
+    const runResult = file
+      ? await apiCall(`/instruments/${iid}/documents/upload`, {
+          method: 'POST',
+          body: (() => { const fd = new FormData(); fd.append('file', file); return fd; })()
+        })
+      : await apiCall(`/instruments/${iid}/documents`, {
+          method: 'POST',
+          body: JSON.stringify({ text, filename: 'live-demo.txt' })
+        });
+    if (file && runResult.extracted_text) lastDocText = runResult.extracted_text;
     setStep('extract', 'done', Math.round(performance.now() - t1));
 
     setStep('compliance', 'active');
@@ -528,12 +555,12 @@ async function runOnExistingInstrument(instrumentId, text, useExistingInstrument
 document.getElementById('run-btn').onclick = async () => {
   hideError();
   const text = document.getElementById('doc-text').value.trim();
-  if (!text) { showError('Paste a document first.'); return; }
+  if (!text && !selectedFile) { showError('Paste a document or upload a file first.'); return; }
   if (!API_BASE || !API_KEY) { showError('Connect to an API instance first (top right).'); return; }
-  lastDocText = text;
+  if (!selectedFile) lastDocText = text;
   const runBtn = document.getElementById('run-btn');
   runBtn.disabled = true;
-  await runOnExistingInstrument(null, text, false);
+  await runOnExistingInstrument(null, text, false, selectedFile);
   runBtn.disabled = false;
 };
 document.getElementById('fix-btn').onclick = async () => {
@@ -593,6 +620,7 @@ function renderResults(runResult, ledger, totalSeconds) {
   const table = document.getElementById('fields-table');
   table.innerHTML = '';
   const rows = [
+    ['Source file', doc.filename],
     ['Document type', doc.document_type],
     ['Classification confidence', (doc.classification_confidence * 100).toFixed(0) + '%'],
     ['Extraction confidence', (doc.extraction_confidence * 100).toFixed(0) + '%'],

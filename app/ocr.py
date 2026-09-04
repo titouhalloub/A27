@@ -14,16 +14,30 @@ silent discovery later.
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 from typing import Callable
 
 OCRCallable = Callable[[Path], str]
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
+_UPLOADABLE_SUFFIXES = {".txt", ".md", ".html", ".htm", ".pdf"} | _IMAGE_SUFFIXES
+
+# MVP guard against accidental multi-gigabyte uploads, not a product limit.
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
 
 
 class TextExtractionError(RuntimeError):
     """Raised when no text can be extracted; the caller routes to review."""
+
+
+class UnsupportedFileType(ValueError):
+    """Raised when an upload's type is not one we know how to parse."""
+
+
+class UploadTooLarge(ValueError):
+    """Raised when an upload exceeds MAX_UPLOAD_BYTES."""
 
 
 def _ocr_with_tesseract(path: Path) -> str:
@@ -82,3 +96,42 @@ def _run_ocr(path: Path, ocr_callback: OCRCallable | None) -> str:
         raise
     except Exception as exc:
         raise TextExtractionError(f"OCR failed on {path.name}: {exc}") from exc
+
+
+def text_from_upload(upload, *, ocr: OCRCallable | None = None) -> str:
+    """Extract text from an uploaded file (FastAPI's UploadFile, or any
+    object with a ``.filename`` and a binary ``.file``).
+
+    The bytes are spooled to a real temp file first: pdfplumber and the
+    Tesseract CLI both want a filesystem path. The size cap is enforced
+    *during* the copy, so an oversized upload never lands on disk in full,
+    and cleanup is guaranteed in the finally block. Raises
+    ``UnsupportedFileType`` / ``UploadTooLarge`` / ``TextExtractionError`` --
+    the caller decides how loudly to fail.
+    """
+    filename = upload.filename or "upload.bin"
+    suffix = Path(filename).suffix.lower()
+    if suffix not in _UPLOADABLE_SUFFIXES:
+        raise UnsupportedFileType(
+            f"Unsupported file type {suffix or '(no extension)'!r}. Supported: "
+            ".txt, .md, .html, .pdf, and images (.png, .jpg, .jpeg, .tif, .tiff, .bmp)."
+        )
+    upload.file.seek(0)
+    fd, tmp_name = tempfile.mkstemp(suffix=suffix)
+    tmp_path = Path(tmp_name)
+    try:
+        copied = 0
+        with os.fdopen(fd, "wb") as out:
+            while True:
+                chunk = upload.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                copied += len(chunk)
+                if copied > MAX_UPLOAD_BYTES:
+                    raise UploadTooLarge(
+                        f"File exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit."
+                    )
+                out.write(chunk)
+        return extract_text(tmp_path, ocr=ocr)
+    finally:
+        tmp_path.unlink(missing_ok=True)

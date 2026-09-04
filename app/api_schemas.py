@@ -83,6 +83,15 @@ class PipelineRunOut(BaseModel):
     routed_to_review: bool
 
 
+class PipelineUploadOut(PipelineRunOut):
+    """PipelineRunOut plus the text the system actually read from the
+    uploaded file -- transparency about what was parsed, and it lets the
+    client re-run review flows (attach-fatwa-and-recheck) without
+    re-uploading."""
+
+    extracted_text: str
+
+
 class HumanReviewRequest(BaseModel):
     reviewer_id: str = Field(..., min_length=1)
     decision: str = Field(..., pattern="^(approved|rejected)$")
