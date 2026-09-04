@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A27 — Live Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,500;0,600;1,400;1,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #0B1B23; --ink-2: #12262F; --ink-3: #1A343F;
+    --gold: #C9A24B; --gold-soft: #E4C878;
+    --sand: #B9AD97; --paper: #EDE6D8;
+    --teal: #4C7A6E; --teal-soft: #6FA093;
+    --amber: #D98E3B; --amber-soft: #F0B978;
+    --line: rgba(237,230,216,0.14);
+    --max: 1040px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ink); color: var(--paper);
+    font-family: 'IBM Plex Sans', sans-serif; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--gold); color: var(--ink); }
+  h1, h2, h3 { font-family: 'Spectral', serif; font-weight: 500; margin: 0; }
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+  a { color: var(--gold-soft); }
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 28px; }
+
+  nav {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(11,27,35,0.92); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+  }
+  nav .wrap { display: flex; justify-content: space-between; align-items: center; padding: 16px 28px; max-width: 1200px; }
+  .brand { font-family: 'IBM Plex Mono', monospace; font-size: 13px; letter-spacing: 0.08em; color: var(--sand); text-transform: uppercase; }
+  .brand strong { color: var(--gold-soft); }
+  .conn-status { display: flex; align-items: center; gap: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--sand); cursor: pointer; }
+  .conn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--sand); }
+  .conn-dot.ok { background: var(--teal-soft); }
+  .conn-dot.bad { background: var(--amber); }
+
+  /* settings drawer */
+  #settings { display: none; background: var(--ink-2); border-bottom: 1px solid var(--line); }
+  #settings.open { display: block; }
+  #settings .wrap { max-width: 1200px; padding: 16px 28px; display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--sand); text-transform: uppercase; letter-spacing: .04em; }
+  .field input { background: var(--ink); border: 1px solid var(--line); color: var(--paper); padding: 8px 10px; border-radius: 4px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; min-width: 220px; }
+  .field input:focus { outline: none; border-color: var(--gold); }
+  .btn { font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; padding: 9px 16px; border-radius: 4px; border: 1px solid var(--gold); color: var(--ink); background: var(--gold-soft); cursor: pointer; }
+  .btn:hover { background: var(--gold); }
+  .btn.ghost { background: transparent; color: var(--gold-soft); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  header.hero { max-width: 1200px; margin: 0 auto; padding: 56px 28px 32px; }
+  .eyebrow { font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--teal-soft); margin-bottom: 16px; }
+  h1.headline { font-size: clamp(28px, 4vw, 42px); line-height: 1.12; max-width: 20ch; }
+  h1.headline em { font-style: italic; color: var(--gold-soft); }
+  .sub { margin-top: 16px; font-size: 17px; color: var(--sand); max-width: 60ch; }
+main { max-width: 1200px; margin: 0 auto; padding: 0 28px 80px; }
+  .panel { background: var(--ink-2); border: 1px solid var(--line); border-radius: 8px; padding: 24px; margin-bottom: 20px; }
+  .panel h2 { font-size: 19px; margin-bottom: 4px; }
+  .panel .desc { color: var(--sand); font-size: 14px; margin-bottom: 18px; }
+
+  .examples { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+  .example-chip { font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; padding: 8px 14px; border-radius: 20px; border: 1px solid var(--line); background: var(--ink); color: var(--paper); cursor: pointer; }
+  .example-chip:hover { border-color: var(--sand); }
+  .example-chip.active { border-color: var(--gold); color: var(--gold-soft); }
+
+  textarea#doc-text {
+    width: 100%; min-height: 180px; background: var(--ink); border: 1px solid var(--line);
+    color: var(--paper); border-radius: 6px; padding: 14px; font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px; line-height: 1.55; resize: vertical;
+  }
+  textarea#doc-text:focus { outline: none; border-color: var(--gold); }
+
+  .run-row { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; gap: 12px; flex-wrap: wrap; }
+  .compliance-toggle { display: flex; gap: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; }
+  .compliance-toggle button { padding: 7px 13px; border-radius: 4px; border: 1px solid var(--line); background: var(--ink); color: var(--sand); cursor: pointer; }
+  .compliance-toggle button.active { border-color: var(--teal-soft); color: var(--teal-soft); }
+
+  /* progress steps */
+  .steps { display: flex; gap: 0; margin: 22px 0; }
+  .step { flex: 1; text-align: center; position: relative; }
+  .step:not(:last-child)::after {
+    content: ""; position: absolute; top: 15px; left: 50%; width: 100%; height: 1px;
+    background: var(--line); z-index: 0;
+  }
+  .step .dot {
+    width: 30px; height: 30px; border-radius: 50%; background: var(--ink); border: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: center; margin: 0 auto 8px; position: relative; z-index: 1;
+    font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--sand); transition: all .25s ease;
+  }
+  .step.active .dot { border-color: var(--gold); color: var(--gold-soft); background: var(--ink-2); }
+  .step.done .dot { border-color: var(--teal-soft); color: var(--teal-soft); background: var(--ink-2); }
+  .step .label { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--sand); }
+  .step.active .label, .step.done .label { color: var(--paper); }
+  .step .time { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--teal-soft); min-height: 14px; }
+
+  .timer { font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: var(--gold-soft); text-align: center; margin: 6px 0 0; }
+
+  /* results */
+  .results { display: none; }
+  .results.show { display: block; }
+  .outcome-banner { border-radius: 6px; padding: 16px 18px; margin-bottom: 18px; display: flex; align-items: center; gap: 14px; }
+  .outcome-banner.pending { background: rgba(76,122,110,0.14); border: 1px solid rgba(111,160,147,0.4); }
+  .outcome-banner.flagged { background: rgba(217,142,59,0.12); border: 1px solid rgba(240,185,120,0.4); }
+  .outcome-banner.na { background: rgba(185,173,151,0.08); border: 1px solid var(--line); }
+  .outcome-icon { font-family: 'IBM Plex Mono', monospace; font-size: 20px; width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .pending .outcome-icon { background: rgba(111,160,147,0.2); color: var(--teal-soft); }
+  .flagged .outcome-icon { background: rgba(240,185,120,0.2); color: var(--amber-soft); }
+  .na .outcome-icon { background: rgba(185,173,151,0.15); color: var(--sand); }
+  .outcome-title { font-family: 'Spectral', serif; font-size: 17px; }
+  .outcome-detail { font-size: 13.5px; color: var(--sand); margin-top: 2px; }
+
+  table.fields { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-bottom: 8px; }
+  table.fields td { padding: 8px 4px; border-bottom: 1px solid var(--line); }
+  table.fields td:first-child { color: var(--sand); font-family: 'IBM Plex Mono', monospace; font-size: 12px; width: 40%; }
+.comparison { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 4px; }
+  .comp-card { flex: 1 1 calc(50% - 7px); min-width: 160px; background: var(--ink); border-radius: 6px; padding: 16px; text-align: center; border: 1px solid var(--line); }
+  .comp-card.win { border-color: rgba(228,200,120,0.4); }
+  .comp-card .num { font-family: 'Spectral', serif; font-size: 26px; color: var(--paper); }
+  .comp-card.win .num { color: var(--gold-soft); }
+  .comp-card .cap { font-size: 12px; color: var(--sand); margin-top: 4px; }
+  .multiplier { text-align: center; margin: 14px 0 4px; }
+  .multiplier .num { font-family: 'Spectral', serif; font-size: 32px; color: var(--gold-soft); }
+  .multiplier .cap { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--sand); }
+  .citation { font-size: 11.5px; color: var(--sand); margin-top: 10px; }
+  .citation a { color: var(--teal-soft); }
+
+  .ledger-entry { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .ledger-entry:last-child { border-bottom: none; }
+  .ledger-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--teal-soft); margin-top: 7px; flex-shrink: 0; }
+  .ledger-type { font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: var(--gold-soft); }
+  .ledger-payload { color: var(--sand); font-size: 12.5px; margin-top: 2px; font-family: 'IBM Plex Mono', monospace; }
+
+  .diff-strip { display: flex; flex-wrap: wrap; gap: 14px; }
+  .diff-card { flex: 1 1 calc(33.333% - 10px); min-width: 200px; }
+
+  /* cap table */
+  .captable-setup { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+  .toggle-row { display: flex; gap: 8px; margin: 18px 0 14px; }
+  .toggle-row button { font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; padding: 8px 14px; border-radius: 4px; border: 1px solid var(--line); background: var(--ink); color: var(--sand); cursor: pointer; }
+  .toggle-row button.active { border-color: var(--gold); color: var(--gold-soft); }
+  .toggle-row button:disabled { opacity: .4; cursor: not-allowed; }
+
+  .ownership-bar { display: flex; width: 100%; height: 40px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+  .ownership-seg { display: flex; align-items: center; justify-content: center; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--ink); transition: flex-basis .6s cubic-bezier(.22,.9,.35,1); white-space: nowrap; overflow: hidden; }
+  .ownership-seg.c0 { background: var(--gold-soft); }
+  .ownership-seg.c1 { background: var(--teal-soft); }
+  .ownership-seg.c2 { background: var(--amber-soft); }
+  .ownership-seg.c3 { background: var(--sand); }
+
+  .ownership-legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 12px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; }
+  .legend-item { display: flex; align-items: center; gap: 7px; color: var(--sand); }
+  .legend-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+  table.captable { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 16px; }
+  table.captable th { text-align: left; font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--sand); padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  table.captable td { padding: 10px 10px; border-bottom: 1px solid var(--line); }
+  table.captable td:last-child { font-family: 'IBM Plex Mono', monospace; color: var(--gold-soft); text-align: right; }
+
+  .captable-empty { color: var(--sand); font-size: 13.5px; padding: 20px 0; text-align: center; }
+  .diff-card h3 { font-size: 15px; color: var(--gold-soft); margin-bottom: 6px; }
+  .diff-card p { font-size: 13.5px; color: var(--sand); margin: 0; }
+
+  .cta { text-align: center; padding: 8px 0 20px; }
+  .cta p { color: var(--sand); font-size: 14px; margin-bottom: 14px; }
+
+  .error-box { background: rgba(217,142,59,0.1); border: 1px solid rgba(240,185,120,0.35); border-radius: 6px; padding: 12px 14px; font-size: 13px; color: var(--amber-soft); margin-top: 10px; display: none; }
+  .error-box.show { display: block; }
+
+  @media (max-width: 720px) {
+    .comparison, .diff-strip { grid-template-columns: 1fr; }
+    .steps { flex-wrap: wrap; }
+  }
+</style>
+</head>
+<body>
+<nav>
+  <div class="wrap">
+    <div class="brand">A27 <strong>/// Live Demo</strong></div>
+    <div class="conn-status" id="conn-toggle">
+      <span class="conn-dot" id="conn-dot"></span>
+      <span id="conn-text">not connected</span>
+    </div>
+  </div>
+</nav>
+
+<div id="settings">
+  <div class="wrap">
+    <div class="field">
+      <label>API base URL</label>
+      <input type="text" id="api-base" placeholder="https://your-api.example.com" />
+    </div>
+    <div class="field">
+      <label>API key</label>
+      <input type="password" id="api-key" placeholder="X-API-Key" />
+    </div>
+    <button class="btn" id="connect-btn">Connect</button>
+  </div>
+</div>
+
+<header class="hero">
+  <div class="eyebrow">Structured finance, automated — traditional and Islamic, one pipeline</div>
+  <h1 class="headline">Turn a 3-minute manual review into a <em>3-second decision.</em></h1>
+  <p class="sub">This is a live instance, not a recording. Pick a real document type below, or paste one of your own, and watch it classify, extract, and clear compliance in real time.</p>
+</header>
+
+<main>
+
+  <div class="panel">
+    <h2>Try it live</h2>
+    <p class="desc">Pick an example, or paste your own document text below.</p>
+
+    <div class="examples" id="examples"></div>
+
+    <textarea id="doc-text" placeholder="Paste a loan agreement, sukuk certificate, or term sheet here..."></textarea>
+
+    <div class="run-row">
+      <div class="compliance-toggle">
+        <span style="color:var(--sand); font-family:'IBM Plex Mono',monospace; font-size:12px; align-self:center;">Track:</span>
+        <button id="mode-traditional" class="active">Traditional</button>
+        <button id="mode-islamic">Islamic</button>
+      </div>
+      <button class="btn" id="run-btn">Process document</button>
+    </div>
+
+    <div class="error-box" id="error-box"></div>
+
+    <div class="steps" id="steps">
+      <div class="step" data-step="classify"><div class="dot">1</div><div class="label">Classify</div><div class="time"></div></div>
+      <div class="step" data-step="extract"><div class="dot">2</div><div class="label">Extract</div><div class="time"></div></div>
+      <div class="step" data-step="compliance"><div class="dot">3</div><div class="label">Compliance</div><div class="time"></div></div>
+      <div class="step" data-step="ledger"><div class="dot">4</div><div class="label">Ledger</div><div class="time"></div></div>
+    </div>
+    <div class="timer" id="timer"></div>
+  </div>
+
+  <div class="results" id="results">
+
+    <div class="panel">
+      <h2>Result</h2>
+      <div class="outcome-banner na" id="outcome-banner">
+        <div class="outcome-icon" id="outcome-icon">—</div>
+        <div>
+          <div class="outcome-title" id="outcome-title">—</div>
+          <div class="outcome-detail" id="outcome-detail">—</div>
+        </div>
+      </div>
+      <div id="fix-row" style="display:none; margin-bottom:16px;">
+        <button class="btn ghost" id="fix-btn">Attach the missing fatwa &amp; re-check</button>
+      </div>
+      <table class="fields" id="fields-table"></table>
+    </div>
+
+    <div class="panel">
+      <h2>What this replaces</h2>
+      <p class="desc">Measured just now, compared against published industry data for manual subscription-document review.</p>
+      <div class="comparison">
+        <div class="comp-card">
+          <div class="num" id="manual-time">~3 min</div>
+          <div class="cap">typical manual review, per document</div>
+        </div>
+        <div class="comp-card win">
+          <div class="num" id="live-time">—</div>
+          <div class="cap">this document, just now</div>
+        </div>
+      </div>
+      <div class="multiplier">
+        <div class="num" id="speed-multiplier">—</div>
+        <div class="cap">faster than typical manual review</div>
+      </div>
+      <div class="citation">
+        Manual review benchmark: ~3 minutes per subscription document before a single exception is investigated —
+        <a href="https://www.v7labs.com/blog/subscription-agreement-review-private-equity" target="_blank" rel="noopener">V7 Labs, 2026</a>.
+        Industry benchmark, not a guarantee of your results.
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Audit trail</h2>
+      <p class="desc">Every decision, traceable — the part a spreadsheet can't do.</p>
+      <div id="ledger-list"></div>
+    </div>
+
+  </div>
+<div class="panel">
+    <h2>Live cap table — a real Series A round</h2>
+    <p class="desc">Ownership is computed by replaying an event log, not stored as a number someone has to remember to update. Watch it recompute correctly, live, against the real API.</p>
+
+    <div class="captable-setup">
+      <button class="btn" id="captable-setup-btn">1. Set up a demo company</button>
+      <button class="btn" id="captable-round-btn" disabled>2. Run a Series A round</button>
+    </div>
+
+    <div id="captable-body" style="display:none;">
+      <div class="toggle-row">
+        <button id="ct-view-before" class="active">Before the round</button>
+        <button id="ct-view-after" disabled>After the round</button>
+      </div>
+
+      <div class="ownership-bar" id="ownership-bar"></div>
+      <div class="ownership-legend" id="ownership-legend"></div>
+
+      <table class="captable" id="captable-table">
+        <tr><th>Holder</th><th>Security</th><th>Shares</th><th>Ownership</th></tr>
+      </table>
+    </div>
+
+    <div class="captable-empty" id="captable-empty">Click "Set up a demo company" to begin.</div>
+    <div class="error-box" id="captable-error"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Why one pipeline, not five tools</h2>
+    <div class="diff-strip">
+      <div class="diff-card">
+        <h3>Handles both tracks</h3>
+        <p>Traditional and Islamic compliance through the same engine — no other platform in the category does both.</p>
+      </div>
+      <div class="diff-card">
+        <h3>Never guesses</h3>
+        <p>Below-threshold confidence routes to a human, always. Approval only ever happens through a person, never the system.</p>
+      </div>
+      <div class="diff-card">
+        <h3>Every decision, traceable</h3>
+        <p>Full audit trail on every document — who, what, when, and why — not a spreadsheet someone forgot to update.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="cta">
+    <p>Have a document you're stuck on? Paste it above and watch it run — or send it to us directly.</p>
+    <a class="btn ghost" href="mailto:reda.halloub@gmail.com" style="text-decoration:none; display:inline-block;">Talk to us</a>
+  </div>
+
+</main>
+
+<script>
+let API_BASE = '';
+let API_KEY = '';
+let selectedMode = 'traditional';
+let currentInstrumentId = null;
+let lastDocText = '';
+
+const EXAMPLES = {
+  'Clean loan': {
+    mode: 'traditional',
+    text: `LOAN AGREEMENT
+Borrower: Alpha Manufacturing Sdn Bhd
+Lender: Meridian Bank Ltd
+Principal: USD 2,500,000
+Interest Rate: 6.5%
+Repayment: quarterly amortization over 5 years
+Maturity Date: 2029-12-31
+Governing Law: English law`
+  },
+  'Sukuk (al-Ijara)': {
+    mode: 'islamic',
+    text: `SUKUK CERTIFICATE
+Issuer: Petra Energy Sukuk SPV
+Total Issue Size: USD 500,000,000
+Structure: al-Ijara
+Underlying Asset: a portfolio of income-generating logistics warehouses
+Profit Rate: 4.25% per annum
+Shariah Committee: Approved per fatwa reference FA-2024-011`
+  },
+  'Missing evidence (should block)': {
+    mode: 'islamic',
+    text: `SUKUK CERTIFICATE
+Issuer: Desert Rose Holdings SPV
+Total Issue Size: USD 40,000,000
+Structure: Murabaha
+Profit Rate: 5.1% per annum`
+  },
+  'Ambiguous (should route to review)': {
+    mode: 'traditional',
+    text: `AGREEMENT BETWEEN PARTIES
+The parties agree the principal amount shall be repaid monthly.
+This document references a profit rate and the murabaha asset
+for which the borrower has provided a fatwa.`
+  }
+};
+
+function buildExamples() {
+  const wrap = document.getElementById('examples');
+  Object.keys(EXAMPLES).forEach((name) => {
+    const chip = document.createElement('button');
+    chip.className = 'example-chip';
+    chip.textContent = name;
+    chip.onclick = () => {
+      document.querySelectorAll('.example-chip').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+      const ex = EXAMPLES[name];
+      document.getElementById('doc-text').value = ex.text;
+      setMode(ex.mode);
+    };
+    wrap.appendChild(chip);
+  });
+}
+buildExamples();
+
+function setMode(mode) {
+  selectedMode = mode;
+  document.getElementById('mode-traditional').classList.toggle('active', mode === 'traditional');
+  document.getElementById('mode-islamic').classList.toggle('active', mode === 'islamic');
+}
+document.getElementById('mode-traditional').onclick = () => setMode('traditional');
+document.getElementById('mode-islamic').onclick = () => setMode('islamic');
+
+document.getElementById('conn-toggle').onclick = () => {
+  document.getElementById('settings').classList.toggle('open');
+};
+document.getElementById('connect-btn').onclick = async () => {
+  API_BASE = document.getElementById('api-base').value.replace(/\/$/, '');
+  API_KEY = document.getElementById('api-key').value;
+  const dot = document.getElementById('conn-dot');
+  const text = document.getElementById('conn-text');
+  try {
+    const r = await fetch(`${API_BASE}/health`);
+    if (r.ok) {
+      dot.className = 'conn-dot ok';
+      text.textContent = 'connected';
+      document.getElementById('settings').classList.remove('open');
+    } else {
+      throw new Error('health check failed');
+    }
+  } catch (e) {
+    dot.className = 'conn-dot bad';
+    text.textContent = 'connection failed';
+  }
+};
+function resetSteps() {
+  document.querySelectorAll('.step').forEach(s => {
+    s.classList.remove('active', 'done');
+    s.querySelector('.time').textContent = '';
+  });
+}
+function setStep(name, state, ms) {
+  const el = document.querySelector(`.step[data-step="${name}"]`);
+  if (!el) return;
+  el.classList.remove('active', 'done');
+  el.classList.add(state);
+  if (ms !== undefined) el.querySelector('.time').textContent = `${ms}ms`;
+}
+
+function showError(msg) {
+  const box = document.getElementById('error-box');
+  box.textContent = msg;
+  box.classList.add('show');
+}
+function hideError() {
+  document.getElementById('error-box').classList.remove('show');
+}
+
+async function apiCall(path, opts) {
+  const r = await fetch(`${API_BASE}${path}`, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY, ...(opts && opts.headers) }
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body.detail || `Request to ${path} failed (${r.status})`);
+  }
+  return r.json();
+}
+
+async function runOnExistingInstrument(instrumentId, text, useExistingInstrument) {
+  resetSteps();
+  document.getElementById('results').classList.remove('show');
+  const start = performance.now();
+  const timerEl = document.getElementById('timer');
+  const timerInterval = setInterval(() => {
+    timerEl.textContent = `${((performance.now() - start) / 1000).toFixed(1)}s elapsed`;
+  }, 80);
+
+  try {
+    let iid = instrumentId;
+    setStep('classify', 'active');
+    if (!useExistingInstrument) {
+      const instrument = await apiCall('/instruments', {
+        method: 'POST',
+        body: JSON.stringify({
+          transaction_type: selectedMode === 'islamic' ? 'sukuk' : 'loan',
+          compliance_mode: selectedMode,
+          issuer_name: 'Demo Issuer', issuer_type: 'Corporate',
+          amount: 1000000, currency: 'USD'
+        })
+      });
+      iid = instrument.id;
+      currentInstrumentId = iid;
+    }
+    setStep('classify', 'done');
+
+    setStep('extract', 'active');
+    const t1 = performance.now();
+    const runResult = await apiCall(`/instruments/${iid}/documents`, {
+      method: 'POST',
+      body: JSON.stringify({ text, filename: 'live-demo.txt' })
+    });
+    setStep('extract', 'done', Math.round(performance.now() - t1));
+
+    setStep('compliance', 'active');
+    await new Promise(r => setTimeout(r, 150));
+    setStep('compliance', 'done');
+
+    setStep('ledger', 'active');
+    const ledger = await apiCall(`/instruments/${iid}/ledger`);
+    setStep('ledger', 'done');
+
+    clearInterval(timerInterval);
+    const totalSeconds = (performance.now() - start) / 1000;
+    timerEl.textContent = `completed in ${totalSeconds.toFixed(2)}s`;
+
+    renderResults(runResult, ledger, totalSeconds);
+  } catch (e) {
+    clearInterval(timerInterval);
+    showError(e.message || 'Something went wrong.');
+  }
+}
+
+document.getElementById('run-btn').onclick = async () => {
+  hideError();
+  const text = document.getElementById('doc-text').value.trim();
+  if (!text) { showError('Paste a document first.'); return; }
+  if (!API_BASE || !API_KEY) { showError('Connect to an API instance first (top right).'); return; }
+  lastDocText = text;
+  const runBtn = document.getElementById('run-btn');
+  runBtn.disabled = true;
+  await runOnExistingInstrument(null, text, false);
+  runBtn.disabled = false;
+};
+document.getElementById('fix-btn').onclick = async () => {
+  hideError();
+  if (!currentInstrumentId) return;
+  const fixBtn = document.getElementById('fix-btn');
+  fixBtn.disabled = true;
+  fixBtn.textContent = 'Attaching evidence...';
+  try {
+    await apiCall(`/instruments/${currentInstrumentId}/evidence`, {
+      method: 'POST',
+      body: JSON.stringify({
+        text: 'Fatwa: the structure described is reviewed and approved as Shariah-compliant by the Shariah Supervisory Board, consistent with the referenced fatwa.',
+        document_type: 'fatwa',
+        filename: 'fatwa-evidence.pdf'
+      })
+    });
+    await runOnExistingInstrument(currentInstrumentId, lastDocText, true);
+  } catch (e) {
+    showError(e.message || 'Could not attach evidence.');
+  } finally {
+    fixBtn.disabled = false;
+    fixBtn.textContent = 'Attach the missing fatwa & re-check';
+  }
+};
+
+function renderResults(runResult, ledger, totalSeconds) {
+  const outcome = runResult.outcome;
+  const banner = document.getElementById('outcome-banner');
+  const icon = document.getElementById('outcome-icon');
+  const title = document.getElementById('outcome-title');
+  const detail = document.getElementById('outcome-detail');
+
+  banner.className = 'outcome-banner';
+  if (outcome === 'pending_scholar_review') {
+    banner.classList.add('pending');
+    icon.textContent = '\u2713';
+    title.textContent = 'Structurally clean — pending scholar review';
+    detail.textContent = 'Never auto-approved. A human reviewer confirms before this becomes final.';
+  } else if (outcome === 'system_flagged_noncompliant') {
+    banner.classList.add('flagged');
+    icon.textContent = '!';
+    title.textContent = 'Flagged — needs attention';
+    detail.textContent = 'The system caught something specific, and said so, instead of guessing.';
+  } else {
+    banner.classList.add('na');
+    icon.textContent = '\u2013';
+    title.textContent = 'Processed — traditional track';
+    detail.textContent = 'No Shariah review required for this track.';
+  }
+
+  const fixRow = document.getElementById('fix-row');
+  fixRow.style.display = (outcome === 'system_flagged_noncompliant' && selectedMode === 'islamic') ? 'block' : 'none';
+
+  const doc = runResult.document;
+  const inst = runResult.instrument;
+  const table = document.getElementById('fields-table');
+  table.innerHTML = '';
+  const rows = [
+    ['Document type', doc.document_type],
+    ['Classification confidence', (doc.classification_confidence * 100).toFixed(0) + '%'],
+    ['Extraction confidence', (doc.extraction_confidence * 100).toFixed(0) + '%'],
+    ['Contract type', inst.shariah_contract_type || '—'],
+    ['Underlying asset', inst.underlying_asset_description || '—'],
+  ];
+  rows.forEach(([k, v]) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${k}</td><td>${v}</td>`;
+    table.appendChild(tr);
+  });
+
+  const manualSeconds = 180;
+  document.getElementById('live-time').textContent = totalSeconds.toFixed(1) + 's';
+  const mult = Math.max(1, Math.round(manualSeconds / totalSeconds));
+  document.getElementById('speed-multiplier').textContent = mult + 'x';
+
+  const ledgerList = document.getElementById('ledger-list');
+  ledgerList.innerHTML = '';
+  ledger.forEach((entry) => {
+    const div = document.createElement('div');
+    div.className = 'ledger-entry';
+    const payloadStr = Object.entries(entry.payload || {}).map(([k, v]) => `${k}: ${v}`).join('  ·  ');
+    div.innerHTML = `<div class="ledger-dot"></div><div><div class="ledger-type">${entry.entry_type}</div><div class="ledger-payload">${payloadStr}</div></div>`;
+    ledgerList.appendChild(div);
+  });
+
+  document.getElementById('results').classList.add('show');
+}
+// --------------------------------------------------------------------- //
+// Live cap table demo -- a real Series A round, against the real API.
+// --------------------------------------------------------------------- //
+
+const CT_ISSUER = 'Demo Acme Inc';
+let ctFounderId = null, ctVcId = null, ctCommonId = null, ctPreferredId = null;
+let ctBeforeIso = null, ctAfterIso = null;
+let ctCurrentView = 'before';
+
+function ctShowError(msg) {
+  const box = document.getElementById('captable-error');
+  box.textContent = msg;
+  box.classList.add('show');
+}
+function ctHideError() {
+  document.getElementById('captable-error').classList.remove('show');
+}
+
+document.getElementById('captable-setup-btn').onclick = async () => {
+  ctHideError();
+  if (!API_BASE || !API_KEY) { ctShowError('Connect to an API instance first (top right).'); return; }
+  const btn = document.getElementById('captable-setup-btn');
+  btn.disabled = true;
+  btn.textContent = 'Setting up...';
+
+  try {
+    const founder = await apiCall('/investors', {
+      method: 'POST', body: JSON.stringify({ name: 'Founder', investor_type: 'individual' })
+    });
+    ctFounderId = founder.id;
+    const vc = await apiCall('/investors', {
+      method: 'POST', body: JSON.stringify({ name: 'Series A Fund', investor_type: 'institution' })
+    });
+    ctVcId = vc.id;
+
+    const common = await apiCall('/securities', {
+      method: 'POST', body: JSON.stringify({
+        issuer_name: CT_ISSUER, name: 'Common Stock', security_type: 'common', authorized_shares: 10000000
+      })
+    });
+    ctCommonId = common.id;
+    const preferred = await apiCall('/securities', {
+      method: 'POST', body: JSON.stringify({
+        issuer_name: CT_ISSUER, name: 'Series A Preferred', security_type: 'preferred', authorized_shares: 5000000
+      })
+    });
+    ctPreferredId = preferred.id;
+
+    const now = Date.now();
+    ctBeforeIso = new Date(now - 200 * 86400000).toISOString();
+    const midIso = new Date(now - 150 * 86400000).toISOString();
+    ctAfterIso = new Date(now - 100 * 86400000).toISOString();
+
+    await apiCall('/cap-table-events', {
+      method: 'POST', body: JSON.stringify({
+        security_id: ctCommonId, event_type: 'issuance', holder_id: ctFounderId,
+        quantity: 8000000, effective_date: ctBeforeIso
+      })
+    });
+
+    document.getElementById('captable-empty').style.display = 'none';
+    document.getElementById('captable-body').style.display = 'block';
+    document.getElementById('captable-round-btn').disabled = false;
+    btn.textContent = '1. Set up a demo company \u2713';
+
+    ctCurrentView = 'before';
+    await ctRenderView(midIso);
+  } catch (e) {
+    ctShowError(e.message || 'Setup failed.');
+    btn.disabled = false;
+    btn.textContent = '1. Set up a demo company';
+  }
+};
+document.getElementById('captable-round-btn').onclick = async () => {
+  ctHideError();
+  const btn = document.getElementById('captable-round-btn');
+  btn.disabled = true;
+  btn.textContent = 'Running Series A...';
+  try {
+    await apiCall('/cap-table-events', {
+      method: 'POST', body: JSON.stringify({
+        security_id: ctPreferredId, event_type: 'issuance', holder_id: ctVcId,
+        quantity: 2000000, price_per_share: 5.0, effective_date: ctAfterIso
+      })
+    });
+    btn.textContent = '2. Run a Series A round \u2713';
+    document.getElementById('ct-view-after').disabled = false;
+    document.getElementById('ct-view-before').onclick();
+  } catch (e) {
+    ctShowError(e.message || 'Could not record the round.');
+    btn.disabled = false;
+    btn.textContent = '2. Run a Series A round';
+  }
+};
+
+document.getElementById('ct-view-before').onclick = async () => {
+  ctCurrentView = 'before';
+  document.getElementById('ct-view-before').classList.add('active');
+  document.getElementById('ct-view-after').classList.remove('active');
+  const midIso = new Date(new Date(ctBeforeIso).getTime() + 25 * 86400000).toISOString();
+  await ctRenderView(midIso);
+};
+document.getElementById('ct-view-after').onclick = async () => {
+  if (document.getElementById('ct-view-after').disabled) return;
+  ctCurrentView = 'after';
+  document.getElementById('ct-view-after').classList.add('active');
+  document.getElementById('ct-view-before').classList.remove('active');
+  await ctRenderView(null); // no as_of = current/now, i.e. after the round
+};
+
+async function ctRenderView(asOfIso) {
+  try {
+    const path = asOfIso
+      ? `/cap-table/${encodeURIComponent(CT_ISSUER)}?as_of=${encodeURIComponent(asOfIso)}`
+      : `/cap-table/${encodeURIComponent(CT_ISSUER)}`;
+    const data = await apiCall(path, { method: 'GET' });
+    renderCapTable(data);
+  } catch (e) {
+    ctShowError(e.message || 'Could not load the cap table.');
+  }
+}
+
+function renderCapTable(data) {
+  const colors = ['c0', 'c1', 'c2', 'c3'];
+  const bar = document.getElementById('ownership-bar');
+  const legend = document.getElementById('ownership-legend');
+  const table = document.getElementById('captable-table');
+  bar.innerHTML = '';
+  legend.innerHTML = '';
+  table.innerHTML = '<tr><th>Holder</th><th>Security</th><th>Shares</th><th>Ownership</th></tr>';
+
+  const byHolder = {};
+  data.positions.forEach((p) => {
+    byHolder[p.holder_id] = byHolder[p.holder_id] || { name: p.holder_name, pct: 0 };
+    byHolder[p.holder_id].pct += p.ownership_percent;
+  });
+
+  Object.keys(byHolder).forEach((holderId, i) => {
+    const h = byHolder[holderId];
+    const seg = document.createElement('div');
+    seg.className = `ownership-seg ${colors[i % colors.length]}`;
+    seg.style.flexBasis = h.pct + '%';
+    seg.textContent = h.pct >= 8 ? h.pct.toFixed(1) + '%' : '';
+    bar.appendChild(seg);
+
+    const legendItem = document.createElement('div');
+    legendItem.className = 'legend-item';
+    legendItem.innerHTML = `<span class="legend-dot ownership-seg ${colors[i % colors.length]}"></span> ${h.name} — ${h.pct.toFixed(1)}%`;
+    legend.appendChild(legendItem);
+  });
+
+  data.positions.forEach((p) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${p.holder_name}</td><td>${p.security_name}</td><td>${p.shares.toLocaleString()}</td><td>${p.ownership_percent.toFixed(1)}%</td>`;
+    table.appendChild(tr);
+  });
+}
+</script>
+
+</body>
+</html>

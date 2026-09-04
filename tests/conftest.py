@@ -1,10 +1,11 @@
 """Shared pytest fixtures."""
-
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.db import Base
+from app.db import Base, get_session
+from app.main import app, require_api_key
 from app.models.enums import ComplianceMode, DocumentType, IngestionSource, TransactionType
 from app.models.orm import Document, Instrument
 
@@ -23,6 +24,32 @@ def session(db):
     yield s
     s.rollback()
     s.close()
+
+
+@pytest.fixture()
+def client(tmp_path):
+    """HTTP client with dependency overrides -> an isolated scratch DB, auth
+    mocked to accept a fixed key. The real auth-gate *logic* is tested directly
+    in test_api.py."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}", future=True)
+    Base.metadata.create_all(engine)
+    TestSessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    def _override_get_session():
+        with TestSessionLocal() as session:
+            yield session
+
+    def _override_require_api_key(key=None):
+        return "test-key-123"
+
+    app.dependency_overrides[get_session] = _override_get_session
+    app.dependency_overrides[require_api_key] = _override_require_api_key
+    try:
+        with TestClient(app) as c:
+            yield c
+    finally:
+        app.dependency_overrides.clear()
+        engine.dispose()
 
 
 def make_instrument(txn_type: TransactionType = TransactionType.LOAN,

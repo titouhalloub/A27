@@ -7,16 +7,12 @@ test config: app.db and app.config both create module-level singletons
 (engine, settings) at import time, and conftest.py's own imports trigger
 that before any per-test env var would take effect. Overriding the
 dependencies directly is the correct, order-independent way to isolate this.
+
+The ``client`` fixture (shared scratch DB + mocked auth) lives in conftest.py.
 """
-from collections.abc import Generator
-
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
 
-from app.db import Base, get_session
-from app.main import app, require_api_key
+from app.main import require_api_key
 
 SUKUK_TEXT = """SUKUK CERTIFICATE
 Issuer: Petra Energy Sukuk SPV
@@ -28,33 +24,6 @@ Shariah Committee: Approved per fatwa reference FA-2024-011
 """
 
 HEADERS = {"X-API-Key": "test-key-123"}
-
-
-@pytest.fixture
-def client(tmp_path) -> Generator[TestClient, None, None]:
-    engine = create_engine(f"sqlite:///{tmp_path / 'api_test.db'}", future=True)
-    Base.metadata.create_all(engine)
-    TestSessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
-
-    def _override_get_session() -> Generator[Session, None, None]:
-        with TestSessionLocal() as session:
-            yield session
-
-    def _override_require_api_key(key: str | None = None) -> str:
-        # Mirrors the real dependency's shape closely enough for testing the
-        # routes; the real auth-gate *logic* (fail-closed on no configured
-        # keys, constant-time comparison) is exercised separately below by
-        # calling the real dependency function directly, not through HTTP.
-        return "test-key-123"
-
-    app.dependency_overrides[get_session] = _override_get_session
-    app.dependency_overrides[require_api_key] = _override_require_api_key
-    try:
-        with TestClient(app) as c:
-            yield c
-    finally:
-        app.dependency_overrides.clear()
-        engine.dispose()
 
 
 def test_health_needs_no_auth(client):

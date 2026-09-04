@@ -11,21 +11,27 @@ from app.models.enums import (
     TransactionType,
 )
 from app.models.orm import (
+    CapTableEvent,
     Document,
     Instrument,
+    Investor,
     LedgerEntry,
+    Security,
     ShariahReviewValidationError,
 )
 
 __all__ = [
+    "CapTableEvent",
     "ComplianceMode",
     "Document",
     "DocumentStatus",
     "DocumentType",
     "IngestionSource",
     "Instrument",
+    "Investor",
     "LedgerEntry",
     "LedgerEntryType",
+    "Security",
     "ShariahContractType",
     "ShariahReviewStatus",
     "ShariahReviewValidationError",

@@ -102,3 +102,76 @@ class LedgerEntryOut(BaseModel):
 
 class ErrorOut(BaseModel):
     detail: str
+
+
+# --------------------------------------------------------------------------- #
+# Cap table schemas -- the live cap-table demo panel
+# --------------------------------------------------------------------------- #
+
+
+class InvestorCreate(BaseModel):
+    name: str = Field(..., min_length=1)
+    investor_type: str = Field("individual", pattern="^(individual|institution)$")
+
+
+class InvestorOut(BaseModel):
+    id: str
+    name: str
+    investor_type: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class SecurityCreate(BaseModel):
+    issuer_name: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1)
+    security_type: str = Field(..., pattern="^(common|preferred)$")
+    authorized_shares: int = Field(..., gt=0)
+
+
+class SecurityOut(BaseModel):
+    id: str
+    issuer_name: str
+    name: str
+    security_type: str
+    authorized_shares: int
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class CapTableEventCreate(BaseModel):
+    security_id: str
+    event_type: str = Field("issuance", pattern="^(issuance|transfer)$")
+    holder_id: str
+    quantity: int = Field(..., gt=0)
+    price_per_share: float | None = Field(default=None, gt=0)
+    effective_date: datetime
+
+
+class CapTableEventOut(BaseModel):
+    id: str
+    security_id: str
+    event_type: str
+    holder_id: str
+    quantity: int
+    price_per_share: float | None
+    effective_date: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class CapTablePosition(BaseModel):
+    holder_id: str
+    holder_name: str
+    security_name: str
+    security_type: str
+    shares: int
+    ownership_percent: float
+
+
+class CapTableOut(BaseModel):
+    issuer_name: str
+    as_of: datetime | None = None
+    positions: list[CapTablePosition]

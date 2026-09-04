@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import secrets
 from contextlib import asynccontextmanager
+from datetime import datetime
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Security
@@ -19,6 +20,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api_schemas import (
+    CapTableEventCreate,
+    CapTableEventOut,
+    CapTableOut,
     DocumentOut,
     DocumentSubmit,
     ErrorOut,
@@ -26,9 +30,14 @@ from app.api_schemas import (
     HumanReviewRequest,
     InstrumentCreate,
     InstrumentOut,
+    InvestorCreate,
+    InvestorOut,
     LedgerEntryOut,
     PipelineRunOut,
+    SecurityCreate,
+    SecurityOut,
 )
+from app.cap_table import replay_cap_table
 from app.compliance import ComplianceGateway
 from app.config import settings
 from app.db import get_session, init_db
@@ -38,7 +47,14 @@ from app.models.enums import (
     LedgerEntryType,
     ShariahReviewStatus,
 )
-from app.models.orm import Document, Instrument, LedgerEntry
+from app.models.orm import (
+    CapTableEvent,
+    Document,
+    Instrument,
+    Investor,
+    LedgerEntry,
+    Security as SecurityModel,
+)
 from app.pipeline import process_document
 from app.review import ShariahReviewError, submit_human_review_instrument
 
@@ -273,3 +289,106 @@ def review_instrument(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+# --------------------------------------------------------------------------- #
+# Cap table -- the live cap-table demo panel
+# --------------------------------------------------------------------------- #
+
+
+@app.post(
+    "/investors",
+    response_model=InvestorOut,
+    status_code=201,
+    responses={401: {"model": ErrorOut}},
+)
+def create_investor(
+    payload: InvestorCreate,
+    session: Session = Depends(get_session),
+    _: str = Depends(require_api_key),
+) -> Investor:
+    investor = Investor(
+        id=str(uuid4()),
+        name=payload.name,
+        investor_type=payload.investor_type,
+    )
+    session.add(investor)
+    session.commit()
+    session.refresh(investor)
+    return investor
+
+
+@app.post(
+    "/securities",
+    response_model=SecurityOut,
+    status_code=201,
+    responses={401: {"model": ErrorOut}},
+)
+def create_security(
+    payload: SecurityCreate,
+    session: Session = Depends(get_session),
+    _: str = Depends(require_api_key),
+) -> SecurityModel:
+    security = SecurityModel(
+        id=str(uuid4()),
+        issuer_name=payload.issuer_name,
+        name=payload.name,
+        security_type=payload.security_type,
+        authorized_shares=payload.authorized_shares,
+    )
+    session.add(security)
+    session.commit()
+    session.refresh(security)
+    return security
+
+
+@app.post(
+    "/cap-table-events",
+    response_model=CapTableEventOut,
+    status_code=201,
+    responses={401: {"model": ErrorOut}, 400: {"model": ErrorOut}},
+)
+def create_cap_table_event(
+    payload: CapTableEventCreate,
+    session: Session = Depends(get_session),
+    _: str = Depends(require_api_key),
+) -> CapTableEvent:
+    # The event must reference securities/investors that actually exist --
+    # no silent dangling references into the event log.
+    security = session.get(SecurityModel, payload.security_id)
+    if security is None:
+        raise HTTPException(
+            status_code=400, detail=f"Security {payload.security_id!r} not found"
+        )
+    investor = session.get(Investor, payload.holder_id)
+    if investor is None:
+        raise HTTPException(
+            status_code=400, detail=f"Investor {payload.holder_id!r} not found"
+        )
+
+    event = CapTableEvent(
+        id=str(uuid4()),
+        security_id=payload.security_id,
+        event_type=payload.event_type,
+        holder_id=payload.holder_id,
+        quantity=payload.quantity,
+        price_per_share=payload.price_per_share,
+        effective_date=payload.effective_date,
+    )
+    session.add(event)
+    session.commit()
+    session.refresh(event)
+    return event
+
+
+@app.get(
+    "/cap-table/{issuer_name}",
+    response_model=CapTableOut,
+    responses={401: {"model": ErrorOut}},
+)
+def get_cap_table(
+    issuer_name: str,
+    as_of: datetime | None = None,
+    session: Session = Depends(get_session),
+    _: str = Depends(require_api_key),
+) -> CapTableOut:
+    positions = replay_cap_table(session, issuer_name, as_of=as_of)
+    return CapTableOut(issuer_name=issuer_name, as_of=as_of, positions=positions)

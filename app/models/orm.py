@@ -29,6 +29,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -248,4 +249,73 @@ class LedgerEntry(Base):
         return (
             f"<LedgerEntry {self.id} type={self.entry_type.value} "
             f"instrument={self.instrument_id!r}>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Cap table (live cap-table demo) -- event-sourced positions, replayed at
+# query time. Supported by the "Live cap table" panel in the demo HTML.
+# ---------------------------------------------------------------------------
+
+
+class Investor(Base):
+    """A holder of securities (individual or institution)."""
+
+    __tablename__ = "investors"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    investor_type: Mapped[str] = mapped_column(String(32))  # individual | institution
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    def __repr__(self) -> str:
+        return f"<Investor {self.id} {self.name!r}>"
+
+
+class Security(Base):
+    """A security class for an issuer (common / preferred)."""
+
+    __tablename__ = "securities"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    issuer_name: Mapped[str] = mapped_column(String(255))
+    name: Mapped[str] = mapped_column(String(255))  # e.g. "Common Stock"
+    security_type: Mapped[str] = mapped_column(String(32))  # common | preferred
+    authorized_shares: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    def __repr__(self) -> str:
+        return f"<Security {self.id} {self.issuer_name!r} {self.security_type!r}>"
+
+
+class CapTableEvent(Base):
+    """An issuance/transfer event that changes a holder's position.
+
+    Positions are never stored as a number -- they are *recomputed* by
+    replaying these events, which is exactly the property the demo's
+    "before/after" toggle exercises against the real API.
+    """
+
+    __tablename__ = "cap_table_events"
+    __table_args__ = (
+        Index("ix_cap_table_event_security", "security_id"),
+        Index("ix_cap_table_event_holder", "holder_id"),
+        Index("ix_cap_table_event_effective", "effective_date"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    security_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("securities.id")
+    )
+    event_type: Mapped[str] = mapped_column(String(32))  # issuance | transfer
+    holder_id: Mapped[str] = mapped_column(String(64), ForeignKey("investors.id"))
+    quantity: Mapped[int] = mapped_column(Integer)
+    price_per_share: Mapped[float | None] = mapped_column(Float, default=None)
+    effective_date: Mapped[datetime] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    def __repr__(self) -> str:
+        return (
+            f"<CapTableEvent {self.id} sec={self.security_id!r} "
+            f"holder={self.holder_id!r} qty={self.quantity}>"
         )
