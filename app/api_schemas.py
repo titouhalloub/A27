@@ -180,6 +180,10 @@ class HolderPositionOut(BaseModel):
     security_id: str
     security_name: str
     shares: float
+    # This POSITION's share of the fully-diluted total -- NOT the holder's
+    # overall percentage. The holder's total across all their securities is
+    # reported once, explicitly, in CapTableOut.ownership_by_holder.
+    # Repeating the holder total on every row made clients double-count.
     ownership_percent: float
 
 
@@ -188,4 +192,5 @@ class CapTableOut(BaseModel):
     as_of: datetime
     total_fully_diluted_shares: float
     shares_by_security: dict[str, float]
+    ownership_by_holder: dict[str, float]
     positions: list[HolderPositionOut]

@@ -754,26 +754,26 @@ function renderCapTable(data) {
   legend.innerHTML = '';
   table.innerHTML = '<tr><th>Holder</th><th>Security</th><th>Shares</th><th>Ownership</th></tr>';
 
-  // The API computes each holder's fully-diluted percentage across ALL their
-  // securities and repeats it on every position row -- take it as-is, never
-  // re-sum it, or a holder with shares in two security classes (e.g. after an
-  // option exercise moves them into common) would show double.
-  const byHolder = {};
-  data.positions.forEach((p) => {
-    byHolder[p.holder_id] = byHolder[p.holder_id] || { name: p.holder_name, pct: p.ownership_percent };
-  });
+  // Contract: each position row's ownership_percent is THAT POSITION's share
+  // of the fully-diluted total; the holder's overall percentage is spelled
+  // out explicitly in ownership_by_holder -- nothing to derive client-side.
+  // (Repeating the holder total on every row once got a client to
+  // double-count a holder with shares in two security classes.)
+  const holderNames = {};
+  data.positions.forEach((p) => { holderNames[p.holder_id] = p.holder_name; });
+  const byHolder = data.ownership_by_holder || {};
 
   Object.keys(byHolder).forEach((holderId, i) => {
-    const h = byHolder[holderId];
+    const pct = byHolder[holderId];
     const seg = document.createElement('div');
     seg.className = `ownership-seg ${colors[i % colors.length]}`;
-    seg.style.flexBasis = h.pct + '%';
-    seg.textContent = h.pct >= 8 ? h.pct.toFixed(1) + '%' : '';
+    seg.style.flexBasis = pct + '%';
+    seg.textContent = pct >= 8 ? pct.toFixed(1) + '%' : '';
     bar.appendChild(seg);
 
     const legendItem = document.createElement('div');
     legendItem.className = 'legend-item';
-    legendItem.innerHTML = `<span class="legend-dot ownership-seg ${colors[i % colors.length]}"></span> ${h.name} — ${h.pct.toFixed(1)}%`;
+    legendItem.innerHTML = `<span class="legend-dot ownership-seg ${colors[i % colors.length]}"></span> ${holderNames[holderId] || holderId} — ${pct.toFixed(1)}%`;
     legend.appendChild(legendItem);
   });
 

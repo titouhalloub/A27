@@ -137,3 +137,36 @@ def test_unknown_issuer_returns_empty(client):
     r = client.get("/cap-table/No%20Such%20Issuer", headers=HEADERS)
     assert r.status_code == 200
     assert r.json()["positions"] == []
+
+
+def test_position_percent_is_per_position_not_holder_total(client, cap_table_ids):
+    """A holder with shares in two securities gets one row per position, each
+    with its OWN share of the fully-diluted total; the holder's overall
+    percentage is reported once, in ownership_by_holder. Repeating the
+    holder total on every row is the ambiguity that made the first demo
+    client double-count."""
+    ids = cap_table_ids
+    r = ids["client"].post("/securities", headers=HEADERS, json={
+        "issuer_name": "Demo Acme Inc", "name": "2026 Option Pool",
+        "security_type": "option", "authorized_shares": 2_000_000,
+    })
+    assert r.status_code == 201
+    pool_id = r.json()["id"]
+    r = ids["client"].post("/cap-table-events", headers=HEADERS, json={
+        "security_id": pool_id, "event_type": "issuance",
+        "holder_id": ids["founder_id"], "quantity": 2_000_000,
+        "effective_date": datetime.now(timezone.utc).isoformat(),
+    })
+    assert r.status_code == 201
+
+    r = ids["client"].get("/cap-table/Demo%20Acme%20Inc", headers=HEADERS)
+    assert r.status_code == 200
+    data = r.json()
+    by_key = {(p["holder_id"], p["security_id"]): p for p in data["positions"]}
+    common_row = by_key[(ids["founder_id"], ids["common_id"])]
+    pool_row = by_key[(ids["founder_id"], pool_id)]
+    # Per-position shares: 8M of 10M and 2M of 10M -- NOT 100% on both rows.
+    assert common_row["ownership_percent"] == pytest.approx(80.0)
+    assert pool_row["ownership_percent"] == pytest.approx(20.0)
+    # The holder's overall percentage is explicit, exactly once.
+    assert data["ownership_by_holder"][ids["founder_id"]] == pytest.approx(100.0)

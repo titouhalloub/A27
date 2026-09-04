@@ -445,6 +445,7 @@ def get_cap_table(
     } if security_ids else {}
 
     ownership = snapshot.ownership_by_holder()
+    total = snapshot.total_fully_diluted_shares
     positions_out = [
         HolderPositionOut(
             holder_id=p.holder_id,
@@ -452,7 +453,14 @@ def get_cap_table(
             security_id=p.security_id,
             security_name=securities.get(p.security_id, "unknown"),
             shares=p.shares,
-            ownership_percent=ownership.get(p.holder_id, 0.0),
+            # Per-position share of the fully-diluted total. The holder's
+            # overall percentage is ownership_by_holder -- repeating it on
+            # every row invited clients to double-count a holder with
+            # shares in more than one security class (a real bug the demo
+            # JS hit).
+            ownership_percent=(
+                round(p.shares / total * 100, 4) if total > 0 else 0.0
+            ),
         )
         for p in snapshot.positions
     ]
@@ -460,7 +468,8 @@ def get_cap_table(
     return CapTableOut(
         issuer_name=snapshot.issuer_name,
         as_of=snapshot.as_of,
-        total_fully_diluted_shares=snapshot.total_fully_diluted_shares,
+        total_fully_diluted_shares=total,
         shares_by_security=snapshot.shares_by_security,
+        ownership_by_holder=ownership,
         positions=positions_out,
     )
