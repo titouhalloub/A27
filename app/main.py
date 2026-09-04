@@ -1,4 +1,4 @@
-"""A27 API -- exposes the tested pipeline (classification, extraction,
+"""Flowgate API -- exposes the tested pipeline (classification, extraction,
 configurable compliance, ledger) as a running service.
 
 This is deliberately thin: every route is a wrapper around functions in
@@ -11,11 +11,14 @@ from __future__ import annotations
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, HTTPException, Security, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.security import APIKeyHeader
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -76,7 +79,7 @@ async def _lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="A27 API",
+    title="Flowgate API",
     description="Unified private-capital pipeline: classification, extraction, "
     "configurable compliance (traditional + Islamic), ledger.",
     version="0.1.0",
@@ -92,6 +95,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_static_dir = Path(__file__).resolve().parent.parent / "static"
+app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+
+@app.get("/")
+def root() -> FileResponse:
+    """Serve the live demo page at the root URL."""
+    index = _static_dir / "index.html"
+    return FileResponse(str(index))
 
 
 # --------------------------------------------------------------------------- #
