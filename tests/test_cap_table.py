@@ -130,7 +130,7 @@ def test_cap_table_event_requires_existing_security(client, cap_table_ids):
         "holder_id": cap_table_ids["founder_id"], "quantity": 1000,
         "effective_date": datetime.now(timezone.utc).isoformat(),
     })
-    assert r.status_code == 400
+    assert r.status_code == 404
 
 
 def test_unknown_issuer_returns_empty(client):

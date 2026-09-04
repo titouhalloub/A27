@@ -157,6 +157,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 0 28px 80px; }
   .ownership-legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 12px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; }
   .legend-item { display: flex; align-items: center; gap: 7px; color: var(--sand); }
   .legend-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  .ct-total { margin-top: 10px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--sand); }
 
   table.captable { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 16px; }
   table.captable th { text-align: left; font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--sand); padding: 8px 10px; border-bottom: 1px solid var(--line); }
@@ -305,6 +306,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 0 28px 80px; }
 
       <div class="ownership-bar" id="ownership-bar"></div>
       <div class="ownership-legend" id="ownership-legend"></div>
+      <div class="ct-total" id="ct-total"></div>
 
       <table class="captable" id="captable-table">
         <tr><th>Holder</th><th>Security</th><th>Shares</th><th>Ownership</th></tr>
@@ -747,14 +749,18 @@ function renderCapTable(data) {
   const bar = document.getElementById('ownership-bar');
   const legend = document.getElementById('ownership-legend');
   const table = document.getElementById('captable-table');
+  const total = document.getElementById('ct-total');
   bar.innerHTML = '';
   legend.innerHTML = '';
   table.innerHTML = '<tr><th>Holder</th><th>Security</th><th>Shares</th><th>Ownership</th></tr>';
 
+  // The API computes each holder's fully-diluted percentage across ALL their
+  // securities and repeats it on every position row -- take it as-is, never
+  // re-sum it, or a holder with shares in two security classes (e.g. after an
+  // option exercise moves them into common) would show double.
   const byHolder = {};
   data.positions.forEach((p) => {
-    byHolder[p.holder_id] = byHolder[p.holder_id] || { name: p.holder_name, pct: 0 };
-    byHolder[p.holder_id].pct += p.ownership_percent;
+    byHolder[p.holder_id] = byHolder[p.holder_id] || { name: p.holder_name, pct: p.ownership_percent };
   });
 
   Object.keys(byHolder).forEach((holderId, i) => {
@@ -776,6 +782,9 @@ function renderCapTable(data) {
     tr.innerHTML = `<td>${p.holder_name}</td><td>${p.security_name}</td><td>${p.shares.toLocaleString()}</td><td>${p.ownership_percent.toFixed(1)}%</td>`;
     table.appendChild(tr);
   });
+
+  const asOf = data.as_of ? new Date(data.as_of).toLocaleDateString() : 'now';
+  total.textContent = `${(data.total_fully_diluted_shares || 0).toLocaleString()} fully-diluted shares · as of ${asOf}`;
 }
 </script>
 

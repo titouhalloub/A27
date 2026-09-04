@@ -29,7 +29,6 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
-    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -37,6 +36,20 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.db import Base
+from app.models.enums import (
+    CapTableEventType,
+    ComplianceMode,
+    DocumentStatus,
+    DocumentType,
+    IngestionSource,
+    LedgerEntryType,
+    SecurityType,
+    TransactionType,
+    ShariahContractType,
+    ShariahReviewStatus,
+    SYSTEM_SETTABLE,
+    HUMAN_ONLY,
+)
 from app.models.enums import (
     ComplianceMode,
     DocumentStatus,
@@ -273,49 +286,79 @@ class Investor(Base):
 
 
 class Security(Base):
-    """A security class for an issuer (common / preferred)."""
+    """A class of equity in a company -- 'Series A Preferred', 'Common
+    Stock', a 2024 option pool. This is deliberately separate from
+    Instrument: an Instrument is one deal (a loan, a single sukuk
+    issuance); a Security is an ongoing class of equity a company issues
+    to many holders, across many rounds, over years. Cap tables are built
+    on Security + CapTableEvent, not Instrument.
+
+    ``issuer_name`` is a plain string rather than a foreign key to a full
+    Issuer/Company entity -- there is no such entity yet in this schema.
+    That's a real simplification: two securities with the same
+    ``issuer_name`` string are currently the only way this system knows
+    they belong to the same company.
+    """
 
     __tablename__ = "securities"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    issuer_name: Mapped[str] = mapped_column(String(255))
+    issuer_name: Mapped[str] = mapped_column(String(255), index=True)
     name: Mapped[str] = mapped_column(String(255))  # e.g. "Common Stock"
-    security_type: Mapped[str] = mapped_column(String(32))  # common | preferred
-    authorized_shares: Mapped[int] = mapped_column(Integer)
+    security_type: Mapped[SecurityType] = mapped_column(
+        Enum(SecurityType, native_enum=False, length=24)
+    )
+    authorized_shares: Mapped[float] = mapped_column(Float)
+    par_value: Mapped[float | None] = mapped_column(Float, default=None)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
     def __repr__(self) -> str:
-        return f"<Security {self.id} {self.issuer_name!r} {self.security_type!r}>"
+        return f"<Security {self.id} {self.issuer_name!r}/{self.name!r}>"
 
 
 class CapTableEvent(Base):
-    """An issuance/transfer event that changes a holder's position.
+    """Append-only. The cap table at any point in time is *computed* by
+    replaying these events up to that date (see
+    ``app.captable.compute_cap_table``), never stored as a row that gets
+    hand-edited and drifts out of sync with reality. Backed by the "Live
+    cap table" panel in the demo HTML.
 
-    Positions are never stored as a number -- they are *recomputed* by
-    replaying these events, which is exactly the property the demo's
-    "before/after" toggle exercises against the real API.
+    ``security_id`` is the security primarily debited/credited by this
+    event. ``target_security_id`` is only used for EXERCISE (option ->
+    common) and CONVERSION (SAFE/note -> preferred or common), where shares
+    move from one security class into another for the same holder.
     """
 
     __tablename__ = "cap_table_events"
     __table_args__ = (
-        Index("ix_cap_table_event_security", "security_id"),
-        Index("ix_cap_table_event_holder", "holder_id"),
-        Index("ix_cap_table_event_effective", "effective_date"),
+        Index("ix_captable_security_id", "security_id"),
+        Index("ix_captable_effective_date", "effective_date"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     security_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("securities.id")
     )
-    event_type: Mapped[str] = mapped_column(String(32))  # issuance | transfer
-    holder_id: Mapped[str] = mapped_column(String(64), ForeignKey("investors.id"))
-    quantity: Mapped[int] = mapped_column(Integer)
+    target_security_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("securities.id"), default=None
+    )
+    event_type: Mapped[CapTableEventType] = mapped_column(
+        Enum(CapTableEventType, native_enum=False, length=16)
+    )
+    holder_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("investors.id")
+    )
+    from_holder_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("investors.id"), default=None
+    )
+    quantity: Mapped[float] = mapped_column(Float)
     price_per_share: Mapped[float | None] = mapped_column(Float, default=None)
-    effective_date: Mapped[datetime] = mapped_column(DateTime)
-    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    effective_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    notes: Mapped[str | None] = mapped_column(Text, default=None)
 
     def __repr__(self) -> str:
         return (
-            f"<CapTableEvent {self.id} sec={self.security_id!r} "
-            f"holder={self.holder_id!r} qty={self.quantity}>"
+            f"<CapTableEvent {self.event_type.value} security={self.security_id!r} "
+            f"qty={self.quantity}>"
         )

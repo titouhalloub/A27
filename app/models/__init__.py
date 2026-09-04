@@ -1,11 +1,13 @@
 """ORM and domain models for A27."""
 
 from app.models.enums import (
+    CapTableEventType,
     ComplianceMode,
     DocumentStatus,
     DocumentType,
     IngestionSource,
     LedgerEntryType,
+    SecurityType,
     ShariahContractType,
     ShariahReviewStatus,
     TransactionType,
@@ -22,6 +24,7 @@ from app.models.orm import (
 
 __all__ = [
     "CapTableEvent",
+    "CapTableEventType",
     "ComplianceMode",
     "Document",
     "DocumentStatus",
@@ -32,6 +35,7 @@ __all__ = [
     "LedgerEntry",
     "LedgerEntryType",
     "Security",
+    "SecurityType",
     "ShariahContractType",
     "ShariahReviewStatus",
     "ShariahReviewValidationError",

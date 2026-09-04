@@ -102,3 +102,30 @@ class LedgerEntryType(str, Enum):
     CATEGORY_MUTATION = "category_mutation"  # a line item, e.g. capital call
     DOCUMENT_RESULT = "document_result"
     COMPLIANCE_EVENT = "compliance_event"
+
+
+class SecurityType(str, Enum):
+    """Classes of equity a company can issue. Kept as vocabulary here; the DB
+    column is a validated string (see app.models.orm.Security) so the Alembic
+    chain stays plain-varchar and portable across SQLite/Postgres."""
+
+    COMMON = "common"
+    PREFERRED = "preferred"
+    OPTION = "option"
+    WARRANT = "warrant"
+    SAFE = "safe"
+    CONVERTIBLE_NOTE = "convertible_note"
+
+
+class CapTableEventType(str, Enum):
+    """Append-only cap-table event vocabulary. Positions are *never* stored --
+    they are recomputed by replaying these (see app.captable.compute_cap_table).
+
+    EXERCISE: option -> common, same holder. CONVERSION: SAFE/note ->
+    preferred or common, same holder."""
+
+    ISSUANCE = "issuance"
+    TRANSFER = "transfer"
+    CANCELLATION = "cancellation"
+    EXERCISE = "exercise"
+    CONVERSION = "conversion"

@@ -27,6 +27,7 @@ from app.api_schemas import (
     DocumentSubmit,
     ErrorOut,
     EvidenceDocumentSubmit,
+    HolderPositionOut,
     HumanReviewRequest,
     InstrumentCreate,
     InstrumentOut,
@@ -37,7 +38,7 @@ from app.api_schemas import (
     SecurityCreate,
     SecurityOut,
 )
-from app.cap_table import replay_cap_table
+from app.captable import CapTableError, compute_cap_table
 from app.compliance import ComplianceGateway
 from app.config import settings
 from app.db import get_session, init_db
@@ -333,6 +334,7 @@ def create_security(
         name=payload.name,
         security_type=payload.security_type,
         authorized_shares=payload.authorized_shares,
+        par_value=payload.par_value,
     )
     session.add(security)
     session.commit()
@@ -344,45 +346,77 @@ def create_security(
     "/cap-table-events",
     response_model=CapTableEventOut,
     status_code=201,
-    responses={401: {"model": ErrorOut}, 400: {"model": ErrorOut}},
+    responses={
+        401: {"model": ErrorOut},
+        400: {"model": ErrorOut},
+        404: {"model": ErrorOut},
+    },
 )
-def create_cap_table_event(
+def record_cap_table_event(
     payload: CapTableEventCreate,
     session: Session = Depends(get_session),
     _: str = Depends(require_api_key),
 ) -> CapTableEvent:
-    # The event must reference securities/investors that actually exist --
-    # no silent dangling references into the event log.
+    # The event must reference securities (and, for exercise/conversion,
+    # the target security) and holders that actually exist -- no silent
+    # dangling references into the event log.
     security = session.get(SecurityModel, payload.security_id)
     if security is None:
         raise HTTPException(
-            status_code=400, detail=f"Security {payload.security_id!r} not found"
+            status_code=404, detail=f"Security {payload.security_id!r} not found"
         )
-    investor = session.get(Investor, payload.holder_id)
-    if investor is None:
-        raise HTTPException(
-            status_code=400, detail=f"Investor {payload.holder_id!r} not found"
-        )
+    if payload.target_security_id is not None:
+        target = session.get(SecurityModel, payload.target_security_id)
+        if target is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Target security {payload.target_security_id!r} not found",
+            )
+    for holder_id in (payload.holder_id, payload.from_holder_id):
+        if holder_id is None:
+            continue
+        if session.get(Investor, holder_id) is None:
+            raise HTTPException(
+                status_code=400, detail=f"Investor {holder_id!r} not found"
+            )
 
     event = CapTableEvent(
         id=str(uuid4()),
         security_id=payload.security_id,
+        target_security_id=payload.target_security_id,
         event_type=payload.event_type,
         holder_id=payload.holder_id,
+        from_holder_id=payload.from_holder_id,
         quantity=payload.quantity,
         price_per_share=payload.price_per_share,
         effective_date=payload.effective_date,
+        notes=payload.notes,
     )
     session.add(event)
-    session.commit()
+    try:
+        session.commit()
+    except Exception as exc:  # noqa: BLE001 -- surfaced as a real 400, not a 500
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     session.refresh(event)
+
+    # Validate the whole log is still consistent -- catches an overdraft
+    # transfer/cancellation/exercise at write time (400 + the offending
+    # event rolled back), not silently at the next unrelated read.
+    try:
+        compute_cap_table(session, security.issuer_name)
+    except CapTableError as exc:
+        session.delete(event)
+        session.commit()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     return event
 
 
 @app.get(
     "/cap-table/{issuer_name}",
     response_model=CapTableOut,
-    responses={401: {"model": ErrorOut}},
+    responses={401: {"model": ErrorOut}, 400: {"model": ErrorOut}},
 )
 def get_cap_table(
     issuer_name: str,
@@ -390,5 +424,43 @@ def get_cap_table(
     session: Session = Depends(get_session),
     _: str = Depends(require_api_key),
 ) -> CapTableOut:
-    positions = replay_cap_table(session, issuer_name, as_of=as_of)
-    return CapTableOut(issuer_name=issuer_name, as_of=as_of, positions=positions)
+    try:
+        snapshot = compute_cap_table(session, issuer_name, as_of=as_of)
+    except CapTableError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    holder_ids = {p.holder_id for p in snapshot.positions}
+    security_ids = {p.security_id for p in snapshot.positions}
+    holders = {
+        h.id: h.name
+        for h in session.execute(
+            select(Investor).where(Investor.id.in_(holder_ids))
+        ).scalars()
+    } if holder_ids else {}
+    securities = {
+        s.id: s.name
+        for s in session.execute(
+            select(SecurityModel).where(SecurityModel.id.in_(security_ids))
+        ).scalars()
+    } if security_ids else {}
+
+    ownership = snapshot.ownership_by_holder()
+    positions_out = [
+        HolderPositionOut(
+            holder_id=p.holder_id,
+            holder_name=holders.get(p.holder_id, "unknown"),
+            security_id=p.security_id,
+            security_name=securities.get(p.security_id, "unknown"),
+            shares=p.shares,
+            ownership_percent=ownership.get(p.holder_id, 0.0),
+        )
+        for p in snapshot.positions
+    ]
+
+    return CapTableOut(
+        issuer_name=snapshot.issuer_name,
+        as_of=snapshot.as_of,
+        total_fully_diluted_shares=snapshot.total_fully_diluted_shares,
+        shares_by_security=snapshot.shares_by_security,
+        positions=positions_out,
+    )

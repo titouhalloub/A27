@@ -126,8 +126,11 @@ class InvestorOut(BaseModel):
 class SecurityCreate(BaseModel):
     issuer_name: str = Field(..., min_length=1)
     name: str = Field(..., min_length=1)
-    security_type: str = Field(..., pattern="^(common|preferred)$")
-    authorized_shares: int = Field(..., gt=0)
+    security_type: str = Field(
+        ..., pattern="^(common|preferred|option|warrant|safe|convertible_note)$"
+    )
+    authorized_shares: float = Field(gt=0)
+    par_value: float | None = Field(default=None, ge=0)
 
 
 class SecurityOut(BaseModel):
@@ -135,7 +138,8 @@ class SecurityOut(BaseModel):
     issuer_name: str
     name: str
     security_type: str
-    authorized_shares: int
+    authorized_shares: float
+    par_value: float | None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -143,35 +147,45 @@ class SecurityOut(BaseModel):
 
 class CapTableEventCreate(BaseModel):
     security_id: str
-    event_type: str = Field("issuance", pattern="^(issuance|transfer)$")
-    holder_id: str
-    quantity: int = Field(..., gt=0)
-    price_per_share: float | None = Field(default=None, gt=0)
+    target_security_id: str | None = None
+    event_type: str = Field(
+        ..., pattern="^(issuance|transfer|cancellation|exercise|conversion)$"
+    )
+    holder_id: str | None = None
+    from_holder_id: str | None = None
+    quantity: float = Field(gt=0)
+    price_per_share: float | None = Field(default=None, ge=0)
     effective_date: datetime
+    notes: str | None = None
 
 
 class CapTableEventOut(BaseModel):
     id: str
     security_id: str
+    target_security_id: str | None
     event_type: str
-    holder_id: str
-    quantity: int
+    holder_id: str | None
+    from_holder_id: str | None
+    quantity: float
     price_per_share: float | None
     effective_date: datetime
+    notes: str | None
 
     model_config = {"from_attributes": True}
 
 
-class CapTablePosition(BaseModel):
+class HolderPositionOut(BaseModel):
     holder_id: str
     holder_name: str
+    security_id: str
     security_name: str
-    security_type: str
-    shares: int
+    shares: float
     ownership_percent: float
 
 
 class CapTableOut(BaseModel):
     issuer_name: str
-    as_of: datetime | None = None
-    positions: list[CapTablePosition]
+    as_of: datetime
+    total_fully_diluted_shares: float
+    shares_by_security: dict[str, float]
+    positions: list[HolderPositionOut]

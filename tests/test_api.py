@@ -127,3 +127,64 @@ def test_review_rejects_instrument_never_routed(client):
 def test_get_nonexistent_instrument_404s(client):
     r = client.get("/instruments/does-not-exist", headers=HEADERS)
     assert r.status_code == 404
+
+
+def test_cap_table_series_a_dilution_over_http(client):
+    """Same claim as the unit test, exercised end to end over HTTP: a
+    Series A round dilutes the founder, and the API computes and returns
+    the correct percentages -- not something a client has to calculate."""
+    from datetime import datetime, timedelta, timezone
+
+    r = client.post("/investors", headers=HEADERS,
+                    json={"name": "Founder", "investor_type": "individual"})
+    founder_id = r.json()["id"]
+    r = client.post("/investors", headers=HEADERS,
+                    json={"name": "Series A Fund", "investor_type": "institution"})
+    vc_id = r.json()["id"]
+
+    r = client.post("/securities", headers=HEADERS, json={
+        "issuer_name": "Acme Inc", "name": "Common Stock",
+        "security_type": "common", "authorized_shares": 10_000_000,
+    })
+    common_id = r.json()["id"]
+    r = client.post("/securities", headers=HEADERS, json={
+        "issuer_name": "Acme Inc", "name": "Series A Preferred",
+        "security_type": "preferred", "authorized_shares": 5_000_000,
+    })
+    preferred_id = r.json()["id"]
+
+    t0 = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
+    t1 = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
+
+    r = client.post("/cap-table-events", headers=HEADERS, json={
+        "security_id": common_id, "event_type": "issuance",
+        "holder_id": founder_id, "quantity": 8_000_000, "effective_date": t0,
+    })
+    assert r.status_code == 201
+
+    r = client.get("/cap-table/Acme%20Inc", headers=HEADERS)
+    assert r.json()["positions"][0]["ownership_percent"] == 100.0
+
+    r = client.post("/cap-table-events", headers=HEADERS, json={
+        "security_id": preferred_id, "event_type": "issuance",
+        "holder_id": vc_id, "quantity": 2_000_000, "price_per_share": 5.0,
+        "effective_date": t1,
+    })
+    assert r.status_code == 201
+
+    r = client.get("/cap-table/Acme%20Inc", headers=HEADERS)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total_fully_diluted_shares"] == 10_000_000
+    by_holder = {p["holder_id"]: p["ownership_percent"] for p in body["positions"]}
+    assert by_holder[founder_id] == 80.0
+    assert by_holder[vc_id] == 20.0
+
+    # Bad event (overdraft) is rejected at write time with 400, not
+    # silently accepted and only caught on the next unrelated read.
+    r = client.post("/cap-table-events", headers=HEADERS, json={
+        "security_id": common_id, "event_type": "cancellation",
+        "from_holder_id": founder_id, "quantity": 999_999_999,
+        "effective_date": t1,
+    })
+    assert r.status_code == 400
