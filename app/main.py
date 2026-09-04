@@ -27,14 +27,18 @@ from app.api_schemas import (
     DocumentSubmit,
     ErrorOut,
     EvidenceDocumentSubmit,
+    HoldingCreate,
+    HoldingOut,
     HolderPositionOut,
     HumanReviewRequest,
     InstrumentCreate,
     InstrumentOut,
     InvestorCreate,
     InvestorOut,
+    InvestorPortfolioOut,
     LedgerEntryOut,
     PipelineRunOut,
+    PortfolioHoldingOut,
     SecurityCreate,
     SecurityOut,
 )
@@ -43,14 +47,17 @@ from app.compliance import ComplianceGateway
 from app.config import settings
 from app.db import get_session, init_db
 from app.models.enums import (
+    ComplianceMode,
     DocumentStatus,
     IngestionSource,
+    InvestorType,
     LedgerEntryType,
     ShariahReviewStatus,
 )
 from app.models.orm import (
     CapTableEvent,
     Document,
+    Holding,
     Instrument,
     Investor,
     LedgerEntry,
@@ -309,12 +316,109 @@ def create_investor(
     investor = Investor(
         id=str(uuid4()),
         name=payload.name,
-        investor_type=payload.investor_type,
+        investor_type=InvestorType(payload.investor_type),
+        kyc_verified=False,
     )
     session.add(investor)
     session.commit()
     session.refresh(investor)
     return investor
+
+
+# --------------------------------------------------------------------------- #
+# Cross-fund portfolio -- one investor's holdings across many funds and both
+# compliance tracks, unified in a single response.
+# --------------------------------------------------------------------------- #
+
+
+@app.post(
+    "/instruments/{instrument_id}/holdings",
+    response_model=HoldingOut,
+    status_code=201,
+    responses={401: {"model": ErrorOut}, 404: {"model": ErrorOut}},
+)
+def create_holding(
+    instrument_id: str,
+    payload: HoldingCreate,
+    session: Session = Depends(get_session),
+    _: str = Depends(require_api_key),
+) -> Holding:
+    """Record an investor's stake in an instrument. Both sides must exist --
+    no silent dangling references into the portfolio."""
+    instrument = session.get(Instrument, instrument_id)
+    if instrument is None:
+        raise HTTPException(
+            status_code=404, detail=f"Instrument {instrument_id!r} not found"
+        )
+    investor = session.get(Investor, payload.investor_id)
+    if investor is None:
+        raise HTTPException(
+            status_code=404, detail=f"Investor {payload.investor_id!r} not found"
+        )
+
+    holding = Holding(
+        id=str(uuid4()),
+        investor_id=investor.id,
+        instrument_id=instrument.id,
+        stake_amount=payload.stake_amount,
+        ownership_percentage=payload.ownership_percentage,
+    )
+    session.add(holding)
+    session.commit()
+    session.refresh(holding)
+    return holding
+
+
+@app.get(
+    "/investors/{investor_id}/portfolio",
+    response_model=InvestorPortfolioOut,
+    responses={401: {"model": ErrorOut}, 404: {"model": ErrorOut}},
+)
+def get_investor_portfolio(
+    investor_id: str,
+    session: Session = Depends(get_session),
+    _: str = Depends(require_api_key),
+) -> InvestorPortfolioOut:
+    """The cross-fund view: every holding an investor has, across funds and
+    across both compliance tracks, with per-track exposure totals -- the same
+    unification thesis as the compliance gateway, on the investor side."""
+    investor = session.get(Investor, investor_id)
+    if investor is None:
+        raise HTTPException(
+            status_code=404, detail=f"Investor {investor_id!r} not found"
+        )
+
+    holding_rows = session.execute(
+        select(Holding).where(Holding.investor_id == investor_id)
+    ).scalars().all()
+
+    holdings_out: list[PortfolioHoldingOut] = []
+    traditional_total = 0.0
+    islamic_total = 0.0
+    seen_instruments: set[str] = set()
+    for holding in holding_rows:
+        instrument = session.get(Instrument, holding.instrument_id)
+        if instrument is None:  # pragma: no cover -- FK-guarded at write time
+            continue
+        seen_instruments.add(instrument.id)
+        if instrument.compliance_mode == ComplianceMode.TRADITIONAL:
+            traditional_total += holding.stake_amount
+        elif instrument.compliance_mode == ComplianceMode.ISLAMIC:
+            islamic_total += holding.stake_amount
+        holdings_out.append(
+            PortfolioHoldingOut(
+                holding=HoldingOut.model_validate(holding),
+                instrument=InstrumentOut.model_validate(instrument),
+            )
+        )
+
+    return InvestorPortfolioOut(
+        investor=InvestorOut.model_validate(investor),
+        holdings=holdings_out,
+        total_traditional_exposure=round(traditional_total, 2),
+        total_islamic_exposure=round(islamic_total, 2),
+        fund_count=len(seen_instruments),
+    )
 
 
 @app.post(

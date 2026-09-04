@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.captable import CapTableError, compute_cap_table
-from app.models.enums import CapTableEventType, SecurityType
+from app.models.enums import CapTableEventType, InvestorType, SecurityType
 from app.models.orm import CapTableEvent, Investor, Security
 
 
@@ -18,7 +18,9 @@ def _dt(days_from_now: int) -> datetime:
 
 
 def _make_investor(session, name: str, investor_type: str = "individual") -> Investor:
-    inv = Investor(id=f"inv-{name}", name=name, investor_type=investor_type)
+    inv = Investor(
+        id=f"inv-{name}", name=name, investor_type=InvestorType(investor_type)
+    )
     session.add(inv)
     session.flush()
     return inv

@@ -129,3 +129,17 @@ class CapTableEventType(str, Enum):
     CANCELLATION = "cancellation"
     EXERCISE = "exercise"
     CONVERSION = "conversion"
+
+
+class InvestorType(str, Enum):
+    """FUND is what makes a cross-fund portfolio view a native join here,
+    not a portal-scraping integration like every competitor's."""
+
+    INDIVIDUAL = "individual"
+    INSTITUTION = "institution"
+    FUND = "fund"
+
+
+class HoldingStatus(str, Enum):
+    ACTIVE = "active"
+    EXITED = "exited"

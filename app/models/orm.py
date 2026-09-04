@@ -41,7 +41,9 @@ from app.models.enums import (
     ComplianceMode,
     DocumentStatus,
     DocumentType,
+    HoldingStatus,
     IngestionSource,
+    InvestorType,
     LedgerEntryType,
     SecurityType,
     TransactionType,
@@ -272,13 +274,22 @@ class LedgerEntry(Base):
 
 
 class Investor(Base):
-    """A holder of securities (individual or institution)."""
+    """A holder of instruments/securities -- an individual, an institution,
+    or a fund. The FUND type is what makes a cross-fund portfolio view a
+    native join here rather than a portal-scraping integration."""
 
     __tablename__ = "investors"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
-    investor_type: Mapped[str] = mapped_column(String(32))  # individual | institution
+    investor_type: Mapped[InvestorType] = mapped_column(
+        Enum(InvestorType, native_enum=False, length=24)
+    )
+    # Investor-level record of the KYC/AML review. The traditional-track
+    # gateway checks for a KYC *document* attached to the instrument; this
+    # flag is the same review recorded on the investor, queryable without
+    # joining encrypted document rows.
+    kyc_verified: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
     def __repr__(self) -> str:
@@ -361,4 +372,38 @@ class CapTableEvent(Base):
         return (
             f"<CapTableEvent {self.event_type.value} security={self.security_id!r} "
             f"qty={self.quantity}>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Cross-fund portfolio -- Holding is the join that lets one investor's
+# portfolio span traditional and Islamic instruments from many issuers and
+# be answered in a single query (GET /investors/{id}/portfolio).
+# ---------------------------------------------------------------------------
+
+
+class Holding(Base):
+    """An investor's stake in one instrument."""
+
+    __tablename__ = "holdings"
+    __table_args__ = (
+        Index("ix_holdings_investor_id", "investor_id"),
+        Index("ix_holdings_instrument_id", "instrument_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    investor_id: Mapped[str] = mapped_column(String(64), ForeignKey("investors.id"))
+    instrument_id: Mapped[str] = mapped_column(String(64), ForeignKey("instruments.id"))
+    stake_amount: Mapped[float] = mapped_column(Float)
+    ownership_percentage: Mapped[float | None] = mapped_column(Float, default=None)
+    status: Mapped[HoldingStatus] = mapped_column(
+        Enum(HoldingStatus, native_enum=False, length=16),
+        default=HoldingStatus.ACTIVE,
+    )
+    acquired_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    def __repr__(self) -> str:
+        return (
+            f"<Holding investor={self.investor_id!r} instrument={self.instrument_id!r} "
+            f"amount={self.stake_amount}>"
         )

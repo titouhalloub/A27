@@ -111,16 +111,51 @@ class ErrorOut(BaseModel):
 
 class InvestorCreate(BaseModel):
     name: str = Field(..., min_length=1)
-    investor_type: str = Field("individual", pattern="^(individual|institution)$")
+    investor_type: str = Field(..., pattern="^(individual|institution|fund)$")
 
 
 class InvestorOut(BaseModel):
     id: str
     name: str
     investor_type: str
+    kyc_verified: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class HoldingCreate(BaseModel):
+    investor_id: str
+    stake_amount: float = Field(gt=0)
+    ownership_percentage: float | None = Field(default=None, ge=0, le=100)
+
+
+class HoldingOut(BaseModel):
+    id: str
+    investor_id: str
+    instrument_id: str
+    stake_amount: float
+    ownership_percentage: float | None
+    status: str
+    acquired_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PortfolioHoldingOut(BaseModel):
+    """One row in a cross-fund portfolio view -- the holding plus enough of
+    the underlying instrument to be useful without a second round trip."""
+
+    holding: HoldingOut
+    instrument: InstrumentOut
+
+
+class InvestorPortfolioOut(BaseModel):
+    investor: InvestorOut
+    holdings: list[PortfolioHoldingOut]
+    total_traditional_exposure: float
+    total_islamic_exposure: float
+    fund_count: int
 
 
 class SecurityCreate(BaseModel):

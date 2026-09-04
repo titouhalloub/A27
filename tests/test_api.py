@@ -188,3 +188,80 @@ def test_cap_table_series_a_dilution_over_http(client):
         "effective_date": t1,
     })
     assert r.status_code == 400
+
+
+def test_cross_fund_portfolio_unifies_traditional_and_islamic(client):
+    """The actual claim being tested: one investor's portfolio spans a
+    traditional loan AND an Islamic sukuk, from two different issuers, and
+    the portfolio endpoint returns both in one response -- not two separate
+    dashboards, not a per-fund view. This is the same unification thesis as
+    the compliance gateway, proven on the investor-facing side.
+    """
+    r = client.post("/investors", headers=HEADERS,
+                    json={"name": "Meridian Capital LP", "investor_type": "institution"})
+    assert r.status_code == 201
+    investor_id = r.json()["id"]
+
+    # Fund A: a traditional loan.
+    r = client.post("/instruments", headers=HEADERS, json={
+        "transaction_type": "loan", "compliance_mode": "traditional",
+        "issuer_name": "Alpha Manufacturing", "issuer_type": "Corporate",
+        "amount": 2_500_000, "currency": "USD",
+    })
+    loan_id = r.json()["id"]
+    r = client.post(f"/instruments/{loan_id}/holdings", headers=HEADERS,
+                    json={"investor_id": investor_id, "stake_amount": 500_000,
+                          "ownership_percentage": 20.0})
+    assert r.status_code == 201
+
+    # Fund B: an entirely separate Islamic sukuk, different issuer.
+    r = client.post("/instruments", headers=HEADERS, json={
+        "transaction_type": "sukuk", "compliance_mode": "islamic",
+        "issuer_name": "Petra Energy Sukuk SPV", "issuer_type": "SPV",
+        "amount": 500_000_000, "currency": "USD",
+    })
+    sukuk_id = r.json()["id"]
+    r = client.post(f"/instruments/{sukuk_id}/holdings", headers=HEADERS,
+                    json={"investor_id": investor_id, "stake_amount": 10_000_000})
+    assert r.status_code == 201
+
+    # One call, both funds, both tracks.
+    r = client.get(f"/investors/{investor_id}/portfolio", headers=HEADERS)
+    assert r.status_code == 200
+    portfolio = r.json()
+
+    assert portfolio["fund_count"] == 2
+    assert portfolio["total_traditional_exposure"] == 500_000
+    assert portfolio["total_islamic_exposure"] == 10_000_000
+    held_instrument_ids = {h["instrument"]["id"] for h in portfolio["holdings"]}
+    assert held_instrument_ids == {loan_id, sukuk_id}
+
+
+def test_holding_requires_real_investor_and_instrument(client):
+    r = client.post("/instruments", headers=HEADERS, json={
+        "transaction_type": "loan", "compliance_mode": "traditional",
+        "issuer_name": "Alpha Manufacturing", "issuer_type": "Corporate",
+        "amount": 1_000_000, "currency": "USD",
+    })
+    instrument_id = r.json()["id"]
+
+    r = client.post(f"/instruments/{instrument_id}/holdings", headers=HEADERS,
+                    json={"investor_id": "does-not-exist", "stake_amount": 1000})
+    assert r.status_code == 404
+
+    r = client.post("/investors", headers=HEADERS,
+                    json={"name": "Test LP", "investor_type": "individual"})
+    investor_id = r.json()["id"]
+    r = client.post("/instruments/does-not-exist/holdings", headers=HEADERS,
+                    json={"investor_id": investor_id, "stake_amount": 1000})
+    assert r.status_code == 404
+
+
+def test_empty_portfolio_for_investor_with_no_holdings(client):
+    r = client.post("/investors", headers=HEADERS,
+                    json={"name": "New LP", "investor_type": "individual"})
+    investor_id = r.json()["id"]
+    r = client.get(f"/investors/{investor_id}/portfolio", headers=HEADERS)
+    assert r.status_code == 200
+    assert r.json()["fund_count"] == 0
+    assert r.json()["holdings"] == []
