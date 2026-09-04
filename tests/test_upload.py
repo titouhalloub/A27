@@ -121,3 +121,28 @@ def test_upload_scanned_image_goes_through_ocr(client, monkeypatch):
     body = r.json()
     assert body["document"]["document_type"] == "loan_agreement"
     assert "LOAN AGREEMENT" in body["extracted_text"]
+
+
+def test_upload_image_without_ocr_installed_fails_loudly(client, monkeypatch):
+    """The one gap the other review flagged: when pytesseract genuinely isn't
+    importable, the upload must fail with a CLEAR 422 explaining that OCR
+    isn't available -- never a silent wrong result and never a 500. We make
+    the import fail the same way a missing install would."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "pytesseract", None)
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 20), color="white").save(buf, format="PNG")
+
+    iid = _make_instrument(client)
+    _attach_kyc(client, iid)
+    r = client.post(
+        f"/instruments/{iid}/documents/upload",
+        headers=HEADERS,
+        files={"file": ("scan-page.png", buf.getvalue(), "image/png")},
+    )
+    assert r.status_code == 422
+    assert "pytesseract" in r.json()["detail"]
