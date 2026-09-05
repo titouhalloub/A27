@@ -28,3 +28,6 @@ Thumbs.db
 
 # --- Local runtime artifacts -------------------------------------------
 _server.pid
+
+# Local test documents (not part of the repo)
+/Warba_Bank_Base_Prospectus_-_final.pdf
