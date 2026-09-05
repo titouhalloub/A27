@@ -459,23 +459,56 @@ function renderResults(runResult, ledger) {
   const pct = (v) => (v != null ? (v * 100).toFixed(0) + "%" : "\u2014");
 
   // --- Extracted fields (with visible confidence) ---
+  // Honest split: rows below the "Deal container" divider are the placeholder
+  // settings this page created to hold the run -- NOT values read from the
+  // document. When the document is unclassified, nothing was extracted, so
+  // document-derived rows say so instead of implying content that isn't there.
+  const unclassified =
+    !doc.document_type ||
+    doc.document_type === "unclassified" ||
+    !doc.extraction_confidence;
+  const NOT_EXTRACTED = "\u2014 not extracted (document unclassified)";
   const fields = [
     ["Document type", doc.document_type],
     ["Source", uploadedFile ? uploadedFile.name : "pasted text"],
     ["Classification confidence", pct(doc.classification_confidence)],
     ["Extraction confidence", pct(doc.extraction_confidence)],
-    ["Issuer", inst.issuer_name],
-    ["Transaction", inst.transaction_type],
-    ["Amount", inst.amount != null ? Number(inst.amount).toLocaleString() + " " + (inst.currency || "USD") : null],
-    ["Contract type", inst.shariah_contract_type],
-    ["Underlying asset", inst.underlying_asset_description],
   ];
+  if (unclassified) {
+    fields.push(["Contract type", NOT_EXTRACTED]);
+    fields.push(["Underlying asset", NOT_EXTRACTED]);
+    fields.push(["Issuer", NOT_EXTRACTED]);
+    fields.push(["Amount", NOT_EXTRACTED]);
+  } else {
+    fields.push(["Contract type", inst.shariah_contract_type]);
+    fields.push(["Underlying asset", inst.underlying_asset_description]);
+    fields.push(["__divider__", "Deal container settings (created for this run)"]);
+    fields.push(["Issuer", inst.issuer_name]);
+    fields.push(["Transaction", inst.transaction_type]);
+    fields.push(["Amount", inst.amount != null ? Number(inst.amount).toLocaleString() + " " + (inst.currency || "USD") : null]);
+  }
   const fl = document.getElementById("fields-list");
   fl.innerHTML = "";
+  if (unclassified) {
+    const note = document.createElement("div");
+    note.className = "check fail";
+    note.style.marginBottom = "10px";
+    note.innerHTML =
+      '<span class="mark">i</span><span class="text">This document didn\u2019t clear the 75% classification gate \u2014 ' +
+      'no fields were extracted. It is flagged for human review, not guessed. ' +
+      "(A base prospectus is a hybrid document; connect an Anthropic API key for LLM classification of mixed types.)</span>";
+    fl.appendChild(note);
+  }
   fields.forEach(([k, v]) => {
     if (v == null || v === "") return;
     const row = document.createElement("div");
     row.className = "field-item";
+    if (k === "__divider__") {
+      row.style.cssText = "border-bottom:none;padding-top:12px;";
+      row.innerHTML = '<span class="k" style="color:var(--teal-soft);text-transform:uppercase;letter-spacing:.05em;">' + esc(v) + '</span><span class="v"></span>';
+      fl.appendChild(row);
+      return;
+    }
     const isConf = String(k).indexOf("confidence") !== -1;
     row.innerHTML = '<span class="k">' + esc(k) + '</span><span class="v' + (isConf ? " conf" : "") + '">' + esc(v) + "</span>";
     fl.appendChild(row);
