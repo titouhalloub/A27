@@ -382,6 +382,9 @@ async function runProcessing() {
         body: JSON.stringify({ text, filename: "live-demo.txt" }),
       });
     }
+    // Uploads return the text the system actually read -- keep it so the
+    // attach-fatwa-and-recheck flow can re-run without re-uploading.
+    lastDocText = runResult.extracted_text || text;
     setStep("extract", "done");
 
     setStep("compliance", "active");
@@ -442,6 +445,123 @@ document.getElementById("fix-btn").onclick = async () => {
   }
 };
 
+// Renders the pipeline response into the dashboard panels. Called after
+// every document run and after the attach-fatwa-and-recheck flow.
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function renderResults(runResult, ledger) {
+  const doc = runResult.document || {};
+  const inst = runResult.instrument || {};
+  const outcome = runResult.outcome;
+  const islamic = (inst.compliance_mode || selectedMode) === "islamic";
+  const pct = (v) => (v != null ? (v * 100).toFixed(0) + "%" : "\u2014");
+
+  // --- Extracted fields (with visible confidence) ---
+  const fields = [
+    ["Document type", doc.document_type],
+    ["Source", uploadedFile ? uploadedFile.name : "pasted text"],
+    ["Classification confidence", pct(doc.classification_confidence)],
+    ["Extraction confidence", pct(doc.extraction_confidence)],
+    ["Issuer", inst.issuer_name],
+    ["Transaction", inst.transaction_type],
+    ["Amount", inst.amount != null ? Number(inst.amount).toLocaleString() + " " + (inst.currency || "USD") : null],
+    ["Contract type", inst.shariah_contract_type],
+    ["Underlying asset", inst.underlying_asset_description],
+  ];
+  const fl = document.getElementById("fields-list");
+  fl.innerHTML = "";
+  fields.forEach(([k, v]) => {
+    if (v == null || v === "") return;
+    const row = document.createElement("div");
+    row.className = "field-item";
+    const isConf = String(k).indexOf("confidence") !== -1;
+    row.innerHTML = '<span class="k">' + esc(k) + '</span><span class="v' + (isConf ? " conf" : "") + '">' + esc(v) + "</span>";
+    fl.appendChild(row);
+  });
+
+  // --- Compliance findings checklist. For Islamic mode the checks mirror
+  // the real ISLAMIC_RULES; for traditional they reflect the gateway
+  // outcome (the API exposes the outcome, not raw per-rule results). ---
+  const checks = [];
+  checks.push({
+    ok: !!doc.document_type && doc.document_type !== "unclassified",
+    text: doc.document_type ? "Classified as " + doc.document_type : "Document classified",
+  });
+  checks.push({
+    ok: doc.classification_confidence != null && doc.classification_confidence >= 0.75,
+    text: "Classification confidence " + pct(doc.classification_confidence) + " (gate 75%)",
+  });
+  checks.push({
+    ok: doc.extraction_confidence != null && doc.extraction_confidence >= 0.85,
+    text: "Extraction confidence " + pct(doc.extraction_confidence) + " (gate 85%)",
+  });
+  if (islamic) {
+    checks.push({
+      ok: !!inst.shariah_contract_type,
+      text: inst.shariah_contract_type ? "Contract type declared: " + inst.shariah_contract_type : "Contract type declared",
+    });
+    checks.push({
+      ok: !!inst.underlying_asset_description,
+      text: inst.underlying_asset_description ? "Asset backing identified" : "Asset backing identified",
+    });
+    checks.push({ ok: outcome !== "system_flagged_noncompliant", text: "No riba / speculative indicators detected" });
+  } else {
+    checks.push({ ok: outcome === "not_applicable", text: "KYC / counterparty documentation present" });
+    checks.push({ ok: outcome === "not_applicable", text: "Rate within sanity bounds" });
+  }
+  const cl = document.getElementById("checklist");
+  cl.innerHTML = "";
+  checks.forEach((c) => {
+    const item = document.createElement("div");
+    item.className = "check " + (c.ok ? "pass" : "fail");
+    item.innerHTML = '<span class="mark">' + (c.ok ? "\u2713" : "!") + '</span><span class="text">' + esc(c.text) + "</span>";
+    cl.appendChild(item);
+  });
+
+  // --- Outcome message + fix flow ---
+  const desc = document.getElementById("compliance-desc");
+  const fixRow = document.getElementById("fix-row");
+  if (outcome === "system_flagged_noncompliant") {
+    desc.textContent = islamic
+      ? "Blocked: blocking findings detected (e.g. missing fatwa evidence). Human review required \u2014 never auto-approved."
+      : "Blocked: compliance findings failed. Fix the document or provide missing evidence.";
+    fixRow.style.display = islamic ? "block" : "none";
+  } else if (outcome === "pending_scholar_review") {
+    desc.textContent = "Structurally clean \u2014 pending Shariah scholar review. Never auto-approved; a human confirms.";
+    fixRow.style.display = "none";
+  } else {
+    desc.textContent = "Passed all " + (islamic ? "Islamic" : "traditional") + " rules. No Shariah review required on this track.";
+    fixRow.style.display = "none";
+  }
+
+  // --- Audit trail ---
+  const ll = document.getElementById("ledger-list");
+  ll.innerHTML = "";
+  (ledger || []).forEach((entry) => {
+    const item = document.createElement("div");
+    item.className = "timeline-item";
+    const payload = entry.payload ? Object.entries(entry.payload).map(([k, v]) => k + ": " + v).join(" \u00b7 ") : "";
+    const when = entry.recorded_at || entry.created_at;
+    item.innerHTML =
+      '<div class="timeline-dot"></div><div><div class="timeline-text mono">' + esc(entry.entry_type) + "</div>" +
+      (payload ? '<div class="timeline-text sub">' + esc(payload) + "</div>" : "") +
+      (when ? '<div class="timeline-text sub">' + esc(String(when).replace("T", " ").slice(0, 19)) + "</div>" : "") +
+      "</div>";
+    ll.appendChild(item);
+  });
+
+  // --- Sidebar summary ---
+  document.getElementById("last-result").innerHTML =
+    '<div class="stat-row"><span class="k">Type</span><span class="v">' + esc(doc.document_type || "\u2014") + "</span></div>" +
+    '<div class="stat-row"><span class="k">Extraction</span><span class="v">' + pct(doc.extraction_confidence) + "</span></div>" +
+    '<div class="stat-row"><span class="k">Outcome</span><span class="v">' + esc(outcome || "\u2014") + "</span></div>";
+}
+
+// --------------------------------------------------------------------- //
+// Live cap table demo -- Series A round, real API
+// --------------------------------------------------------------------- //
 // --------------------------------------------------------------------- //
 // Live cap table demo -- Series A round, real API
 // --------------------------------------------------------------------- //
@@ -507,6 +627,10 @@ document.getElementById("captable-round-btn").onclick = async () => {
   try {
     await apiCall("/cap-table-events", { method: "POST", body: JSON.stringify({ security_id: ctPreferredId, event_type: "issuance", holder_id: ctVcId, quantity: 2000000, price_per_share: 5.0, effective_date: ctAfterIso }) });
     btn.textContent = "Series A complete";
+    const afterBtn = document.getElementById("ct-view-after");
+    afterBtn.disabled = false;
+    afterBtn.classList.add("active");
+    document.getElementById("ct-view-before").classList.remove("active");
     const data = await apiCall("/cap-table/" + encodeURIComponent(CT_ISSUER));
     renderCapTable(data);
   } catch (e) {
@@ -517,6 +641,7 @@ document.getElementById("captable-round-btn").onclick = async () => {
 };
 
 document.getElementById("ct-view-before").onclick = async () => {
+  if (!ctBeforeIso) return; // no demo company set up yet — avoid a bogus 1970 as_of fetch
   document.getElementById("ct-view-before").classList.add("active");
   document.getElementById("ct-view-after").classList.remove("active");
   try {
