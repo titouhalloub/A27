@@ -474,6 +474,14 @@ function renderResults(runResult, ledger) {
     ["Classification confidence", pct(doc.classification_confidence)],
     ["Extraction confidence", pct(doc.extraction_confidence)],
   ];
+  if (runResult.pages_total != null) {
+    fields.push([
+      "Pages parsed",
+      runResult.pages_read >= runResult.pages_total
+        ? "all " + runResult.pages_total + " pages"
+        : "first " + runResult.pages_read + " of " + runResult.pages_total + " pages (processing limit)",
+    ]);
+  }
   if (unclassified) {
     fields.push(["Contract type", NOT_EXTRACTED]);
     fields.push(["Underlying asset", NOT_EXTRACTED]);

@@ -90,6 +90,11 @@ class PipelineUploadOut(PipelineRunOut):
     re-uploading."""
 
     extracted_text: str
+    # What the parser actually read from the PDF (after the MAX_PDF_PAGES /
+    # MAX_PDF_CHARS caps in app.ocr) -- transparency about bounded intake.
+    # None for non-PDF uploads.
+    pages_read: int | None = None
+    pages_total: int | None = None
 
 
 class HumanReviewRequest(BaseModel):

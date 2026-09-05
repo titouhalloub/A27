@@ -262,8 +262,9 @@ def upload_document(
     if instrument is None:
         raise HTTPException(status_code=404, detail=f"Instrument {instrument_id!r} not found")
 
+    page_meta: dict = {}
     try:
-        text = text_from_upload(file)
+        text = text_from_upload(file, meta=page_meta)
     except UnsupportedFileType as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except UploadTooLarge as exc:
@@ -286,6 +287,8 @@ def upload_document(
         outcome=result.outcome,
         routed_to_review=result.routed,
         extracted_text=text,
+        pages_read=page_meta.get("pages_read"),
+        pages_total=page_meta.get("pages_total"),
     )
 
 

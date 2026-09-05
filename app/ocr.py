@@ -27,6 +27,14 @@ _UPLOADABLE_SUFFIXES = {".txt", ".md", ".html", ".htm", ".pdf"} | _IMAGE_SUFFIXE
 # MVP guard against accidental multi-gigabyte uploads, not a product limit.
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
 
+# Bounded PDF intake. Classification and extraction work on a text window,
+# so pages past these caps add latency without adding signal -- a 300-page
+# prospectus ran ~32s and blew through Railway's ~30s proxy timeout (502).
+# Not silent truncation: the upload response reports pages_read/pages_total
+# so the client can state exactly what was read.
+MAX_PDF_PAGES = 40
+MAX_PDF_CHARS = 200_000
+
 
 class TextExtractionError(RuntimeError):
     """Raised when no text can be extracted; the caller routes to review."""
@@ -48,18 +56,42 @@ def _ocr_with_tesseract(path: Path) -> str:
         raise TextExtractionError(
             "OCR requested but pytesseract/Pillow are not installed."
         ) from exc
-    return pytesseract.image_to_string(Image.open(str(path)))
+    try:
+        return pytesseract.image_to_string(Image.open(str(path)))
+    except pytesseract.TesseractNotFoundError as exc:
+        # The Python package is installed but the OS binary is missing
+        # (the case on a bare container). Fail with an actionable message,
+        # not an unhandled EnvironmentError.
+        raise TextExtractionError(
+            "OCR requires the Tesseract binary, which is not installed on "
+            "this server. Install it (e.g. 'apt-get install tesseract-ocr') "
+            "or send a document with a text layer."
+        ) from exc
 
 
 def extract_text(path: str | Path, *, ocr: OCRCallable | None = None) -> str:
     """Return extracted text from a file.
 
-    Raises ``TextExtractionError`` when no text can be extracted — the caller
+    Raises ``TextExtractionError`` when no text can be extracted -- the caller
+    must route the document to human review in that case.
+    """
+    return extract_text_meta(path, ocr=ocr)[0]
+
+
+def extract_text_meta(
+    path: str | Path, *, ocr: OCRCallable | None = None
+) -> tuple[str, dict]:
+    """Return ``(text, meta)`` where meta states exactly what was read from
+    the file: ``pages_read`` / ``pages_total`` for PDFs (after the
+    MAX_PDF_PAGES / MAX_PDF_CHARS caps), ``None`` for other types.
+
+    Raises ``TextExtractionError`` when no text can be extracted -- the caller
     must route the document to human review in that case.
     """
     file_path = Path(path)
     suffix = file_path.suffix.lower()
     text = ""
+    meta: dict = {"pages_read": None, "pages_total": None}
 
     if suffix in {".txt", ".md", ".html", ".htm"}:
         text = file_path.read_text(encoding="utf-8", errors="replace")
@@ -71,8 +103,14 @@ def extract_text(path: str | Path, *, ocr: OCRCallable | None = None) -> str:
             raise TextExtractionError("pdfplumber is not installed") from exc
 
         with pdfplumber.open(str(file_path)) as pdf:
+            meta["pages_total"] = len(pdf.pages)
+            pages_read = 0
             for page in pdf.pages:
+                if pages_read >= MAX_PDF_PAGES or len(text) >= MAX_PDF_CHARS:
+                    break
                 text += (page.extract_text() or "") + "\n"
+                pages_read += 1
+        meta["pages_read"] = pages_read
 
         if not text.strip():
             text = _run_ocr(file_path, ocr)
@@ -85,7 +123,7 @@ def extract_text(path: str | Path, *, ocr: OCRCallable | None = None) -> str:
 
     if not text.strip():
         raise TextExtractionError(f"No text could be extracted from {file_path.name}")
-    return text
+    return text, meta
 
 
 def _run_ocr(path: Path, ocr_callback: OCRCallable | None) -> str:
@@ -98,9 +136,14 @@ def _run_ocr(path: Path, ocr_callback: OCRCallable | None) -> str:
         raise TextExtractionError(f"OCR failed on {path.name}: {exc}") from exc
 
 
-def text_from_upload(upload, *, ocr: OCRCallable | None = None) -> str:
+def text_from_upload(
+    upload, *, ocr: OCRCallable | None = None, meta: dict | None = None
+) -> str:
     """Extract text from an uploaded file (FastAPI's UploadFile, or any
     object with a ``.filename`` and a binary ``.file``).
+
+    If ``meta`` is a dict, it is updated in place with ``pages_read`` /
+    ``pages_total`` so the caller can report what was actually parsed.
 
     The bytes are spooled to a real temp file first: pdfplumber and the
     Tesseract CLI both want a filesystem path. The size cap is enforced
@@ -132,6 +175,9 @@ def text_from_upload(upload, *, ocr: OCRCallable | None = None) -> str:
                         f"File exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit."
                     )
                 out.write(chunk)
-        return extract_text(tmp_path, ocr=ocr)
+        text, page_meta = extract_text_meta(tmp_path, ocr=ocr)
+        if meta is not None:
+            meta.update(page_meta)
+        return text
     finally:
         tmp_path.unlink(missing_ok=True)
