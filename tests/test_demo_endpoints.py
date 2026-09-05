@@ -26,6 +26,7 @@ def _normalise(path: str) -> str:
     path = path.split("?")[0]
     path = path.replace("${iid}", "{instrument_id}")
     path = path.replace("${currentInstrumentId}", "{instrument_id}")
+    path = path.replace("${instrument.id}", "{instrument_id}")
     path = path.replace(
         "${encodeURIComponent(CT_ISSUER)}", "{issuer_name}"
     )
@@ -39,6 +40,11 @@ def test_every_demo_endpoint_exists_on_the_api():
         if not raw.startswith("/"):
             continue
         path = _normalise(raw)
-        if path not in valid:
-            missing.append((raw, path))
+        if path in valid:
+            continue
+        # JS string concatenation fragments ('/cap-table/' + encodeURIComponent(...))
+        # are captured as a trailing-slash prefix of the real parametrised route.
+        if path.endswith("/") and any(r.startswith(path) for r in valid):
+            continue
+        missing.append((raw, path))
     assert not missing, f"demo calls missing API routes: {missing}"
