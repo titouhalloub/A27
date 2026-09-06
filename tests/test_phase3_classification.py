@@ -63,3 +63,23 @@ def test_classification_emits_trace_with_confidence():
     assert trace is not None
     assert trace.metadata["confidence"] == result.confidence
     assert trace.output["document_type"] == result.document_type.value
+
+
+def test_llm_outage_degrades_to_heuristics_not_500(monkeypatch):
+    """A rate-limited / failing LLM must never propagate an exception up to
+    the upload endpoint. classification falls back to the deterministic
+    keyword path and the confidence gate still applies."""
+    import app.classification as mod
+
+    def boom(text):
+        raise RuntimeError("Rate limit exceeded: free-models-per-day")
+
+    monkeypatch.setattr(mod, "classify_with_llm", boom)
+    # Force the LLM branch even if no key is configured in the test env.
+    monkeypatch.setattr(mod.settings, "openrouter_api_key", "sk-or-v1-test")
+
+    # Must NOT raise.
+    result = classify_document(LOAN_TEXT, filename="loan-agreement.pdf")
+    # The heuristic path is deterministic and knows LOAN_TEXT is a loan.
+    assert result.document_type == DocumentType.LOAN_AGREEMENT
+    assert result.backend == "heuristic"

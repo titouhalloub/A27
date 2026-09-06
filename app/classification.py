@@ -351,9 +351,20 @@ def classify_with_llm(text: str) -> ClassificationResult:
 
 
 def classify_document(text: str, filename: str = "") -> ClassificationResult:
-    """Run the classifier, gate on the confidence floor, emit a trace."""
+    """Run the classifier, gate on the confidence floor, emit a trace.
+
+    The LLM path is *best effort*: rate limits, network failures, or a
+    model slug that OpenRouter retired must never 500 the upload. If the
+    LLM raises for any reason we fall back to the deterministic keyword
+    classifier and the same confidence gate still applies -- so the worst
+    case is a lower-confidence result that routes to human review, never
+    a crash and never a silent guess.
+    """
     if settings.anthropic_api_key or settings.openrouter_api_key:
-        result = classify_with_llm(text)
+        try:
+            result = classify_with_llm(text)
+        except Exception:  # noqa: BLE001 -- LLM outages must degrade, not 500
+            result = classify_with_heuristics(text, filename=filename)
     else:
         result = classify_with_heuristics(text, filename=filename)
 
