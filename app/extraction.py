@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 import re
 from dataclasses import dataclass, field
 from typing import Callable
@@ -15,6 +16,8 @@ from app.schemas import (
     EXTRACTION_ROUTE_NAMES,
     LoanExtraction,
     SukukExtraction,
+    CapitalCallExtraction,
+    SubscriptionAgreementExtraction,
     extract_result_to_document_data,
 )
 
@@ -121,10 +124,130 @@ def extract_sukuk(text: str) -> tuple[SukukExtraction | None, float]:
     return extraction, confidence
 
 
+def extract_capital_call(text: str) -> tuple[CapitalCallExtraction | None, float]:
+    """Extract capital call information from a capital call notice or subscription doc.
+
+    Looks for: funder name, currency, capital being called, due date, and
+    wire instructions. The source_text (the text window the amounts were
+    parsed from) is captured for audit trail purposes.
+    """
+    funder = _grep(r"(?:call(?:ed|ing)? to|notice.*(?:capital|call|contribution).*from|lp|limited partner)[^\n,]*:\s*([^\n,]{2,80})", text)
+    # Fallback: look for "Name:" near fund names
+    if not funder:
+        funder = _grep(r'(?:fund|lp|limited partner)(?:\s+name)?[:\s]+([^\n,]{2,80})', text)
+    currency = (_grep(_CURRENCY, text) or "USD").upper()[:3]
+    owing = _amount(r"(?:capital call|called|amount (?:(?:to )?be )?due|contribution|amount due|call amount|together with)[^0-9\n]{0,50}?[\s$]*" + _CURRENCY + r"?[\s$]*" + _AMOUNT, text)
+    # Fallback patterns for the called amount
+    if owing is None:
+        owing = _amount(r"(?:usd|eur|gbp|myr|aed|sar|sgd|idr|try)?[\s$]*" + _AMOUNT + r"\s*(?:million|mio|k|thousand)?", text)
+    due_raw = _grep(r"(?:due date|call date|payment date|expire)[:\s]+([\d/\-]{4,20})", text)
+    due_date = None
+    if due_raw:
+        try:
+            due_date = date.fromisoformat(due_raw.replace("/", "-"))
+        except (ValueError, TypeError):
+            pass
+    wire = _grep(r"(?:wire|account)[^\n]{0,200}(?:account number|aba|routing|swift|iban)[^\n]{0,200}", text)
+
+    present = [funder is not None, currency is not None, owing is not None, due_date is not None]
+    confidence = round(sum(bool(p) for p in present) / len(present), 3)
+
+    if not funder or owing is None:
+        return None, confidence
+
+    try:
+        extraction = CapitalCallExtraction(
+            funder_name=funder,
+            currency=currency,
+            capital_owing=owing,
+            due_date=due_date,
+            wire_details=wire,
+            source_text=text[:2000],  # bounded audit trail of the parsed window
+        )
+    except Exception:
+        return None, confidence
+    return extraction, confidence
+
+
+def extract_subscription(text: str) -> tuple[SubscriptionAgreementExtraction | None, float]:
+    """Extract subscription agreement information.
+
+    Looks for: fund name, investor name, commitment amount, currency,
+    payment due date, and payment instructions.
+    """
+    fund_name = _grep(
+        r"(?:fund|issuer|vehicle)\s*name[\s:]+([^\n,]{2,80})",
+        text
+    )
+    if fund_name:
+        fund_name = fund_name.lstrip(": \t").strip()
+    if not fund_name:
+        fund_name = _grep(r"(?:on behalf of|for the account of)[^\n]{0,50}?([^\n,]{2,80})", text)
+
+    investor_name = _grep(
+        r"(?:investor|subscriber|limited partner|lp)\s*name[\s:]+([^\n,]{2,80})",
+        text
+    )
+    if investor_name:
+        investor_name = investor_name.lstrip(": \t").strip()
+    if not investor_name:
+        investor_name = _grep(r"(?:the undersigned|investor name)[^\n]{0,30}?([^\n,]{2,80})", text)
+
+    commitment = _amount(
+        r"(?:capital|subscription|commitment|committed)[^\n]{0,50}?(?:amount|commitment)?[^\n]{0,30}?" + _CURRENCY + r"?[\s$]*" + _AMOUNT,
+        text
+    )
+    if commitment is None:
+        commitment = _amount(r"(?:usd|eur|gbp|myr|aed|sar|sgd|idr|try)?[\s$]*" + _AMOUNT + r"\s*(?:million|mio|k|thousand)?", text)
+
+    currency = (_grep(_CURRENCY, text) or "USD").upper()[:3]
+
+    payment_due_raw = _grep(r"(?:payment|due|closing|subscription)\s*date[\s:]+([\d/\-]{4,20})", text)
+    payment_due_date = None
+    if payment_due_raw:
+        try:
+            payment_due_date = date.fromisoformat(payment_due_raw.replace("/", "-"))
+        except (ValueError, TypeError):
+            pass
+
+    payment_instructions = _grep(
+        r"(?:wire|account|payment|bank|transfer)[^\n]{0,100}(?:number|details|instruction|info)[^\n]{0,100}",
+        text
+    )
+
+    present = [
+        fund_name is not None,
+        investor_name is not None,
+        commitment is not None,
+        currency is not None,
+        payment_due_date is not None,
+    ]
+    confidence = round(sum(bool(p) for p in present) / len(present), 3)
+
+    if not fund_name or commitment is None:
+        return None, confidence
+
+    try:
+        extraction = SubscriptionAgreementExtraction(
+            fund_name=fund_name,
+            investor_name=investor_name or "",
+            commitment_amount=commitment,
+            currency=currency,
+            payment_due_date=payment_due_date,
+            payment_instructions=payment_instructions,
+            source_text=text[:2000],
+        )
+    except Exception:
+        return None, confidence
+    return extraction, confidence
+
+
 EXTRACTORS: dict[str, Callable[[str], tuple[BaseModel | None, float]]] = {
     "loan_agreement": extract_loan,
     "term_sheet": extract_loan,
     "sukuk_certificate": extract_sukuk,
+    "capital_call_notice": extract_capital_call,
+    "subscription_agreement": extract_subscription,
 }
 
 

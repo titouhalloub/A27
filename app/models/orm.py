@@ -38,6 +38,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 from app.db import Base
 from app.models.enums import (
     CapTableEventType,
+    CapitalCallStatus,
     ComplianceMode,
     DocumentStatus,
     DocumentType,
@@ -406,4 +407,67 @@ class Holding(Base):
         return (
             f"<Holding investor={self.investor_id!r} instrument={self.instrument_id!r} "
             f"amount={self.stake_amount}>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Capital calls -- ingestion, commitment lookup, and approval gating.
+# ---------------------------------------------------------------------------
+
+
+class CapitalCall(Base):
+    """A capital call notice extracted from a document, pending approval.
+
+    The system NEVER moves money on its own. An extracted call is
+    ``PENDING_APPROVAL`` until a named human reviewer confirms it. Only
+    approval materializes a real ``CapTableEvent`` (issuance of the called
+    capital). See ``app.proposals`` for the approval gate.
+
+    ``committed_capital`` is looked up from the linked ``Holding`` row; if no
+    holding exists for (funder, instrument), the call is flagged for manual
+    review rather than guessing a commitment amount.
+    """
+
+    __tablename__ = "capital_calls"
+    __table_args__ = (
+        Index("ix_capital_calls_instrument_id", "instrument_id"),
+        Index("ix_capital_calls_funder_id", "funder_id"),
+        Index("ix_capital_calls_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    instrument_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("instruments.id")
+    )
+    funder_id: Mapped[str] = mapped_column(String(64), ForeignKey("investors.id"))
+    capital_owing: Mapped[float] = mapped_column(Float, nullable=False)
+    committed_capital: Mapped[float | None] = mapped_column(Float, default=None)
+    amount_due: Mapped[float] = mapped_column(Float, nullable=False)
+    currency: Mapped[str] = mapped_column(String(8), default="USD")
+    due_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    wire_details: Mapped[str | None] = mapped_column(Text, default=None)
+    # What the extractor actually read — the audit trail of the parsed document.
+    source_text: Mapped[str] = mapped_column(Text, nullable=False)
+    pages_read: Mapped[int | None] = mapped_column(nullable=True)
+    pages_total: Mapped[int | None] = mapped_column(nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    status: Mapped[CapitalCallStatus] = mapped_column(
+        Enum(CapitalCallStatus, native_enum=False, length=32),
+        default=CapitalCallStatus.PENDING_APPROVAL,
+    )
+    requires_manual_review: Mapped[bool] = mapped_column(
+        default=False,
+        comment="True when committed_capital was not found (no Holding row) "
+        "and amount_due could not be calculated — route to a human.",
+    )
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        default=_utcnow, onupdate=_utcnow
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<CapitalCall instrument={self.instrument_id!r} "
+            f"funder={self.funder_id!r} owing={self.capital_owing} "
+            f"status={self.status.value}>"
         )

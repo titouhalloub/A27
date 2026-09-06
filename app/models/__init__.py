@@ -2,6 +2,7 @@
 
 from app.models.enums import (
     CapTableEventType,
+    CapitalCallStatus,
     ComplianceMode,
     DocumentStatus,
     DocumentType,
@@ -16,6 +17,7 @@ from app.models.enums import (
 )
 from app.models.orm import (
     CapTableEvent,
+    CapitalCall,
     Document,
     Holding,
     Instrument,
@@ -28,6 +30,8 @@ from app.models.orm import (
 __all__ = [
     "CapTableEvent",
     "CapTableEventType",
+    "CapitalCall",
+    "CapitalCallStatus",
     "ComplianceMode",
     "Document",
     "DocumentStatus",

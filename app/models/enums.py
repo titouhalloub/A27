@@ -42,6 +42,8 @@ class DocumentType(str, Enum):
     KYC = "kyc"
     SIDE_LETTER = "side_letter"
     SAFE = "safe"
+    SUBSCRIPTION_AGREEMENT = "subscription_agreement"
+    CAPITAL_CALL_NOTICE = "capital_call_notice"
     UNCLASSIFIED = "unclassified"
     OTHER = "other"
 
@@ -102,6 +104,19 @@ class LedgerEntryType(str, Enum):
     CATEGORY_MUTATION = "category_mutation"  # a line item, e.g. capital call
     DOCUMENT_RESULT = "document_result"
     COMPLIANCE_EVENT = "compliance_event"
+    CAP_TABLE_EVENT = "cap_table_event"
+    CAP_TABLE_PROPOSAL = "cap_table_proposal"
+
+
+class ProposalStatus(str, Enum):
+    """Lifecycle of a proposed cap-table event. The system never writes
+    ownership-changing facts on its own: extraction produces a PROPOSED
+    event, and only a named human reviewer can move it to APPROVED (which
+    materializes a real CapTableEvent) or REJECTED."""
+
+    PROPOSED = "proposed"
+    APPROVED = "approved"
+    REJECTED = "rejected"
 
 
 class SecurityType(str, Enum):
@@ -143,3 +158,14 @@ class InvestorType(str, Enum):
 class HoldingStatus(str, Enum):
     ACTIVE = "active"
     EXITED = "exited"
+
+
+class CapitalCallStatus(str, Enum):
+    """Lifecycle of a capital call ingestion. The system never moves money
+    on its own: an extracted call is PENDING_APPROVAL until a human reviewer
+    confirms it through the approval gate."""
+
+    PENDING_COMMITMENT_LOOKUP = "pending_commitment_lookup"
+    PENDING_APPROVAL = "pending_approval"
+    APPROVED = "approved"
+    REJECTED = "rejected"

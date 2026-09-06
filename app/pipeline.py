@@ -68,7 +68,9 @@ def process_document(session: Session, instrument: Instrument,
                               compliance_mode=instrument.compliance_mode.value)
 
     # 1. Classification: its own step, confidence gate, never a guess.
-    classification = classify_document(text)
+    # Pass the filename too — a file named "Subscription-Agreement-...pdf"
+    # is a strong signal even when the OCR'd text is sparse or partial.
+    classification = classify_document(text, filename=filename)
 
     if classification.document_type == DocumentType.UNCLASSIFIED:
         doc = make_doc(DocumentType.UNCLASSIFIED, classification.confidence, 0.0,

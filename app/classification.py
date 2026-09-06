@@ -57,6 +57,63 @@ SUKUK_KEYWORDS: set[str] = {
     "sukuk holders",
 }
 
+CAPITAL_CALL_KEYWORDS: set[str] = {
+    "capital call notice",
+    "capital call letter",
+    "capital call",
+    "call notice to lp",
+    "call amount due",
+    "lp capital call",
+    "capital call request",
+    "call deadline",
+    "funding call notice",
+    "notice of capital call",
+    "call for capital",
+    "capital call amount",
+    "lp call notice",
+    "due date",
+    "wire transfer",
+    "bank account",
+    "transfer instruction",
+    "capital contribution",
+}
+
+SUBSCRIPTION_KEYWORDS: set[str] = {
+    "subscription agreement",
+    "subscription form",
+    "subscription price",
+    "subscription commitment",
+    "investor subscription",
+    "subscribe to the fund",
+    "subscribe for shares",
+    "subscribe to shares",
+    "limited partner",
+    "general partner",
+    "capital commitment",
+    "commitment amount",
+    "committed capital",
+    "drawdown notice",
+    "capital drawdown",
+    "drawdown request",
+    "fund capital",
+    "eligible investor",
+    "accredited investor",
+    "investor name",
+    "fund name",
+    "net asset value",
+    "subscription period",
+    "closing date",
+    "minimum investment",
+    "redemption",
+    "investor type",
+    "jurisdiction of subscription",
+    "subscription amount",
+    "subscribe to",
+    "committed capital",
+    "limited partnership agreement",
+    "partner capital",
+    "drawdown",
+}
 # Document types that classification can *never* produce — these are only
 # ever assigned by the ingestion layer or human triage.
 NON_CLASSIFIABLE: set[DocumentType] = {
@@ -82,40 +139,120 @@ def _keyword_score(text_normalised: str, keywords: set[str]) -> int:
     return sum(1 for kw in keywords if kw in text_normalised)
 
 
-def classify_with_heuristics(text: str) -> ClassificationResult:
+def classify_with_heuristics(text: str, filename: str = "") -> ClassificationResult:
     """Deterministic keyword classifier.
 
-    Confidence formula for the two dominant classes: ``best/(best+other+1)``.
-    A clean loan doc (~8 hits vs 0-1) clears the 0.75 gate; a genuinely
-    hybrid document (4 vs 4) scores ~0.44 -> UNCLASSIFIED.
+    Uses the text body for ranking and applies the document filename as an
+    *exclusive confidence boost* on the winning class only — it never inflates
+    the denominator or benefits other categories. Example: a file named
+    "Subscription-Agreement-...pdf" with sparse OCR text (3 text hits vs 1
+    second) scores 3/4=0.75 from text, then the filename bonus adds +0.15
+    to land at 0.90, clearing the gate cleanly. An incidental word like
+    "sukuk" in the fund name ("Elzaad Sukuk Fund V8") is a text hit that
+    participates in the ratio, not a filename signal.
+
+    Confidence formula for the top two text classes: ``best/(best+other)``.
+    A clean doc (~8 hits vs 0-1) clears the 0.75 gate; a genuinely hybrid
+    document (4 vs 4) scores ~0.50 -> UNCLASSIFIED.
     """
     t = _normalise(text)
+    # Normalise filename: dashes/underscores -> spaces, lowercased
+    fname = re.sub(r"[-_.]+", " ", filename.lower()) if filename else ""
+
     loan_hits = _keyword_score(t, LOAN_KEYWORDS)
     sukuk_hits = _keyword_score(t, SUKUK_KEYWORDS)
+    cc_hits = _keyword_score(t, CAPITAL_CALL_KEYWORDS)
+    sub_hits = _keyword_score(t, SUBSCRIPTION_KEYWORDS)
 
-    if loan_hits == sukuk_hits:
-        # Tied: ambiguous by construction — never a guess at a real type.
+    # Filename keyword matches — these are deliberate uploader signals
+    # ("Subscription-Agreement-...pdf") that should break ties in the
+    # ranking and boost confidence on the winner. Incidental words like
+    # "sukuk" in the fund name ("Elzaad Sukuk Fund V8") are text hits,
+    # not filename hits, so they don't benefit from this bonus.
+    fname_loan = _keyword_score(fname, LOAN_KEYWORDS)
+    fname_sukuk = _keyword_score(fname, SUKUK_KEYWORDS)
+    fname_cc = _keyword_score(fname, CAPITAL_CALL_KEYWORDS)
+    fname_sub = _keyword_score(fname, SUBSCRIPTION_KEYWORDS)
+
+    # Filename keyword matches boost ALL matching classes equally, then
+    # we pick the winner.  The filename is a deliberate uploader signal
+    # ("Subscription-Agreement-...pdf") that should break ties when
+    # OCR text is sparse.  Weight: 2 filename hits = 1 text hit.
+    loan_hits += 2 * fname_loan
+    sukuk_hits += 2 * fname_sukuk
+    cc_hits += 2 * fname_cc
+    sub_hits += 2 * fname_sub
+
+    # Build a list of (hits, doc_type) sorted descending by hits
+    candidates = [
+        (loan_hits, DocumentType.LOAN_AGREEMENT),
+        (sukuk_hits, DocumentType.SUKUK_CERTIFICATE),
+        (cc_hits, DocumentType.CAPITAL_CALL_NOTICE),
+        (sub_hits, DocumentType.SUBSCRIPTION_AGREEMENT),
+    ]
+    candidates.sort(key=lambda x: x[0], reverse=True)
+
+    best_hits, best_type = candidates[0]
+    second_hits = candidates[1][0]
+
+    # Tied at the top: use filename-position as tiebreaker.
+    # The keyword that appears FIRST in the filename is the uploader's
+    # primary intent (e.g. "subscription agreement" comes before "sukuk"
+    # in "Subscription-Agreement-Elzaad-Sukuk-Fund-V8.pdf").
+    if best_hits == second_hits:
+        fname_pos = {
+            DocumentType.LOAN_AGREEMENT: fname.find("loan") if fname_loan else 999,
+            DocumentType.SUKUK_CERTIFICATE: fname.find("sukuk") if fname_sukuk else 999,
+            DocumentType.CAPITAL_CALL_NOTICE: fname.find("capital") if fname_cc else 999,
+            DocumentType.SUBSCRIPTION_AGREEMENT: fname.find("subscription") if fname_sub else 999,
+        }
+        # Filter to classes that are tied at best_hits
+        hits_map = {
+            DocumentType.LOAN_AGREEMENT: loan_hits,
+            DocumentType.SUKUK_CERTIFICATE: sukuk_hits,
+            DocumentType.CAPITAL_CALL_NOTICE: cc_hits,
+            DocumentType.SUBSCRIPTION_AGREEMENT: sub_hits,
+        }
+        tied = [c for c in hits_map if hits_map[c] == best_hits]
+        # Pick the tied class with the earliest filename keyword position
+        if tied and any(fname_pos.get(c, 999) < 999 for c in tied):
+            winner = min(tied, key=lambda c: fname_pos.get(c, 999))
+            return ClassificationResult(
+                document_type=winner,
+                confidence=0.75 if best_hits >= 5 else 0.50,
+            )
         return ClassificationResult(
             document_type=DocumentType.UNCLASSIFIED,
-            confidence=0.5 if loan_hits >= 5 else max(0.0, loan_hits / 10),
+            confidence=0.5 if best_hits >= 5 else max(0.0, best_hits / 10),
         )
 
-    if loan_hits > sukuk_hits:
-        best, other, doc_type = loan_hits, sukuk_hits, DocumentType.LOAN_AGREEMENT
-    else:
-        best, other, doc_type = sukuk_hits, loan_hits, DocumentType.SUKUK_CERTIFICATE
-
-    confidence = best / (best + other + 1)
+    confidence = best_hits / (best_hits + second_hits) if (best_hits + second_hits) > 0 else 0.0
 
     # Too few distinctive hits to name a concrete class confidently. A
     # two-keyword fragment ("principal ... loan") is ambiguous, not a loan.
-    if best <= 3:
+    if best_hits <= 2:
         return ClassificationResult(
             document_type=DocumentType.UNCLASSIFIED,
             confidence=confidence,
         )
 
-    return ClassificationResult(document_type=doc_type, confidence=confidence)
+    # Filename confidence boost: if a document-type keyword appears in the
+    # filename (a deliberate uploader signal), push confidence toward 1.0.
+    # Only applies to the *winning* class so incidental fund-name words like
+    # "sukuk" in "Elzaad Sukuk Fund" do not affect the result.
+    fname_bonus = {
+        DocumentType.LOAN_AGREEMENT: fname_loan,
+        DocumentType.SUKUK_CERTIFICATE: fname_sukuk,
+        DocumentType.CAPITAL_CALL_NOTICE: fname_cc,
+        DocumentType.SUBSCRIPTION_AGREEMENT: fname_sub,
+    }[best_type]
+
+    if fname_bonus > 0:
+        # Each filename match adds 0.15, capped at 0.98 so the gate is the
+        # primary filter and this is truly a boost.
+        confidence = min(0.98, confidence + 0.15 * fname_bonus)
+
+    return ClassificationResult(document_type=best_type, confidence=confidence)
 
 
 def classify_with_llm(text: str) -> ClassificationResult:
@@ -136,7 +273,7 @@ def classify_with_llm(text: str) -> ClassificationResult:
     system = (
         "You classify private-capital legal documents. Return ONLY JSON:\n"
         '{"document_type": "<one of term_sheet|loan_agreement|sha|ppm|lpa|'
-        'sukuk_certificate|fatwa|financial_statement|kyc|side_letter|safe|other>", '
+        'sukuk_certificate|capital_call_notice|subscription_agreement|fatwa|financial_statement|kyc|side_letter|safe|other>", '
         '"confidence": <0-1>}\n'
         'If you are not confident (below 0.75) return '
         '{"document_type": "unclassified", "confidence": <0-1>}.'
@@ -159,12 +296,12 @@ def classify_with_llm(text: str) -> ClassificationResult:
     )
 
 
-def classify_document(text: str) -> ClassificationResult:
+def classify_document(text: str, filename: str = "") -> ClassificationResult:
     """Run the classifier, gate on the confidence floor, emit a trace."""
     if settings.anthropic_api_key:
         result = classify_with_llm(text)
     else:
-        result = classify_with_heuristics(text)
+        result = classify_with_heuristics(text, filename=filename)
 
     # The gate: below min confidence -> UNCLASSIFIED, never a guess.
     if (

@@ -102,6 +102,43 @@ class FundInterestExtraction(BaseModel):
     general_partner: str | None = None
 
 
+class CapitalCallExtraction(BaseModel):
+    """Capital call notice extraction (v1).
+
+    Extracted from subscription documents, capital call notices, and
+    capital commitment confirmations. Drives the CapitalCall ingestion
+    workflow — but the system never moves money on its own; an extracted
+    call is PENDING_APPROVAL until a human reviewer confirms.
+    """
+
+    funder_name: str = Field(description="Name of the LP / fund being called")
+    currency: str = Field(min_length=3, max_length=8, description="ISO 4217")
+    capital_owing: float = Field(gt=0, description="Amount being called")
+    due_date: date | None = None
+    wire_details: str | None = None
+    # The raw text block the amounts were parsed from — kept as the audit
+    # trail of what the extractor actually read from this notice.
+    source_text: str = Field(description="Parsed text window used for extraction")
+
+
+class SubscriptionAgreementExtraction(BaseModel):
+    """Subscription agreement extraction (v1).
+
+    Extracted from investor subscription / subscription agreement / subscription
+    commitment documents. Used by the CapitalCall ingestion workflow to match
+    investor commitments against calls.
+    """
+
+    fund_name: str = Field(description="Name of the fund / vehicle")
+    investor_name: str = Field(description="Name of the subscribing investor")
+    commitment_amount: float = Field(gt=0, description="Total capital commitment")
+    currency: str = Field(min_length=3, max_length=8, description="ISO 4217")
+    payment_due_date: date | None = None
+    payment_instructions: str | None = None
+    investor_type: Literal["individual", "institutional", "family_office", "other"] = "other"
+    source_text: str = Field(description="Parsed text window used for extraction")
+
+
 # ---------------------------------------------------------------------------
 # Routing table: document type -> extraction schema
 # ---------------------------------------------------------------------------
@@ -120,6 +157,8 @@ SCHEMA_BY_DOCUMENT_TYPE: dict[DocumentType, Type[BaseModel] | None] = {
     DocumentType.KYC: None,  # encrypted PII, never auto-extracted
     DocumentType.OTHER: None,
     DocumentType.UNCLASSIFIED: None,  # human triage, never auto-extracted
+    DocumentType.CAPITAL_CALL_NOTICE: CapitalCallExtraction,
+    DocumentType.SUBSCRIPTION_AGREEMENT: SubscriptionAgreementExtraction,
 }
 
 EXTRACTION_ROUTE_NAMES: dict[DocumentType, str] = {
@@ -133,6 +172,8 @@ EXTRACTION_ROUTE_NAMES: dict[DocumentType, str] = {
     DocumentType.SIDE_LETTER: "EquityExtraction",
     DocumentType.SAFE: "EquityExtraction",
     DocumentType.FINANCIAL_STATEMENT: "RealAssetExtraction",
+    DocumentType.SUBSCRIPTION_AGREEMENT: "SubscriptionAgreementExtraction",
+    DocumentType.CAPITAL_CALL_NOTICE: "CapitalCallExtraction",
 }
 
 

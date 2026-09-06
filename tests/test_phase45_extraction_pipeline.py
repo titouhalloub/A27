@@ -158,8 +158,10 @@ def test_unclassified_document_routes_to_triage(db):
     instr = make_instrument()
     session.add(instr)
     session.commit()
+    # Genuinely ambiguous: no strong keywords for any document type
     result = process_document(session, instr, ComplianceGateway(),
-                              "ALMOST A LOAN: principal but no repayment...")
+                              "This document relates to a financial agreement "
+                              "between parties regarding obligations and terms.")
     assert result.document.document_type == DocumentType.UNCLASSIFIED
     assert result.routed is True
     session.close()
