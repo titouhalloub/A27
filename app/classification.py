@@ -128,7 +128,7 @@ class ClassificationResult:
     document_type: DocumentType
     confidence: float
     raw_output: str | None = None
-    backend: str = "heuristic"  # "heuristic" | "claude"
+    backend: str = "heuristic"  # "heuristic" | "claude" | "openrouter"
 
 
 def _normalise(text: str) -> str:
@@ -255,36 +255,47 @@ def classify_with_heuristics(text: str, filename: str = "") -> ClassificationRes
     return ClassificationResult(document_type=best_type, confidence=confidence)
 
 
-def classify_with_llm(text: str) -> ClassificationResult:
-    """Claude structured classification — used when ``ANTHROPIC_API_KEY`` is set.
+def _classify_with_openai_compatible(
+    text: str,
+    api_key: str,
+    base_url: str,
+    model: str,
+    backend: str,
+) -> ClassificationResult:
+    """Unified OpenAI-compatible LLM classification (Anthropic or OpenRouter).
 
     The prompt asks for strict JSON and the result still runs through the
     *same* confidence gate, so the LLM can never silently override the
     no-guess rule.
     """
     try:
-        import anthropic
+        from openai import OpenAI
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "anthropic not installed; set ANTHROPIC_API_KEY or use the heuristic backend"
+            "openai>=1.40 not installed; set A27_OPENROUTER_API_KEY (free) "
+            "or A27_ANTHROPIC_API_KEY (paid), or use the heuristic backend."
         ) from exc
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = OpenAI(api_key=api_key, base_url=base_url)
     system = (
-        "You classify private-capital legal documents. Return ONLY JSON:\n"
+        "You classify private-capital legal documents. Return ONLY valid JSON:\n"
         '{"document_type": "<one of term_sheet|loan_agreement|sha|ppm|lpa|'
         'sukuk_certificate|capital_call_notice|subscription_agreement|fatwa|financial_statement|kyc|side_letter|safe|other>", '
-        '"confidence": <0-1>}\n'
+        '"confidence": <0.0-1.0>}\n'
         'If you are not confident (below 0.75) return '
-        '{"document_type": "unclassified", "confidence": <0-1>}.'
+        '{"document_type": "unclassified", "confidence": <0.0-1.0>}.\n'
+        'Return ONLY the JSON, no explanation.'
     )
-    resp = client.messages.create(
-        model=settings.anthropic_model,
+    resp = client.chat.completions.create(
+        model=model,
         max_tokens=200,
-        system=system,
-        messages=[{"role": "user", "content": text[:20000]}],
+        temperature=0.0,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": text[:20000]},
+        ],
     )
-    raw = resp.content[0].text.strip() if resp.content else "{}"
+    raw = resp.choices[0].message.content.strip() if resp.choices else "{}"
     payload = json.loads(raw)
     doc_type = DocumentType(payload.get("document_type", "unclassified"))
     confidence = float(payload.get("confidence", 0.0))
@@ -292,13 +303,56 @@ def classify_with_llm(text: str) -> ClassificationResult:
         document_type=doc_type,
         confidence=confidence,
         raw_output=raw,
-        backend="claude",
+        backend=backend,
+    )
+
+
+def classify_with_llm(text: str) -> ClassificationResult:
+    """Route to the configured LLM backend (Anthropic or OpenRouter).
+
+    Priority:
+    1. Backend configured in llm_backend_preference
+    2. OpenRouter (free tier) if openrouter_api_key is set
+    3. Anthropic if anthropic_api_key is set
+    """
+    pref = settings.llm_backend_preference
+
+    if pref == "anthropic" and settings.anthropic_api_key:
+        return _classify_with_openai_compatible(
+            text,
+            api_key=settings.anthropic_api_key,
+            base_url="https://api.anthropic.com/v1",
+            model=settings.anthropic_model,
+            backend="claude",
+        )
+
+    if settings.openrouter_api_key:
+        return _classify_with_openai_compatible(
+            text,
+            api_key=settings.openrouter_api_key,
+            base_url=settings.openrouter_base_url,
+            model=settings.openrouter_model,
+            backend="openrouter",
+        )
+
+    if settings.anthropic_api_key:
+        return _classify_with_openai_compatible(
+            text,
+            api_key=settings.anthropic_api_key,
+            base_url="https://api.anthropic.com/v1",
+            model=settings.anthropic_model,
+            backend="claude",
+        )
+
+    raise RuntimeError(
+        "No LLM API key configured. Set A27_OPENROUTER_API_KEY (free) or "
+        "A27_ANTHROPIC_API_KEY (paid), or use the heuristic backend."
     )
 
 
 def classify_document(text: str, filename: str = "") -> ClassificationResult:
     """Run the classifier, gate on the confidence floor, emit a trace."""
-    if settings.anthropic_api_key:
+    if settings.anthropic_api_key or settings.openrouter_api_key:
         result = classify_with_llm(text)
     else:
         result = classify_with_heuristics(text, filename=filename)

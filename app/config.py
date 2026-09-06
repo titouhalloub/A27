@@ -11,9 +11,20 @@ class Settings(BaseSettings):
     # --- Database -----------------------------------------------------------
     database_url: str = "sqlite:///./a27.db"
 
-    # --- Anthropic (classification / extraction) ----------------------------
+    # --- LLM backends (classification / extraction) -------------------------
+    # Anthropic (paid) — used when anthropic_api_key is set.
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-20250514"
+
+    # OpenRouter (free tier available) — used when openrouter_api_key is set.
+    # Endpoint: https://openrouter.ai/api/v1 (OpenAI-compatible).
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_model: str = "meta-llama/llama-3.1-8b-instruct:free"
+
+    # Which LLM backend to prefer when both keys are set: "anthropic" | "openrouter"
+    llm_backend_preference: str = "openrouter"
+
     classification_min_confidence: float = 0.75
     extraction_min_confidence: float = 0.85
 

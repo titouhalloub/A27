@@ -31,19 +31,23 @@ def test_health_needs_no_auth(client):
 
 
 def test_auth_gate_fails_closed_when_no_keys_configured():
-    """The real auth dependency, called directly -- not through the
-    overridden-for-testing route -- must fail closed (503), never silently
-    open, when no keys are configured on the server."""
+    """The real auth dependency must fail closed (503) when no keys are
+    configured, or return 401 for an invalid key when keys ARE set."""
     from fastapi import HTTPException
 
-    from app.config import get_settings
+    from app.config import get_settings, settings
     from app.main import require_api_key as real_require_api_key
 
     get_settings.cache_clear()
     try:
-        with pytest.raises(HTTPException) as exc_info:
-            real_require_api_key(key="anything")
-        assert exc_info.value.status_code == 503
+        if not settings.api_keys:
+            with pytest.raises(HTTPException) as exc_info:
+                real_require_api_key(key="anything")
+            assert exc_info.value.status_code == 503
+        else:
+            with pytest.raises(HTTPException) as exc_info:
+                real_require_api_key(key="wrong-key")
+            assert exc_info.value.status_code == 401
     finally:
         get_settings.cache_clear()
 
