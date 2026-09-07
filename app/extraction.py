@@ -24,6 +24,85 @@ from app.schemas import (
 _CURRENCY = r"(?:USD|EUR|GBP|MYR|AED|SAR|SGD|IDR|TRY)"
 _AMOUNT = r"(\d[\d,]*\.?\d*)"
 
+# Form/questionnaire answers and other filler that a lazy `[^\n,]{2,80}` name
+# capture happily swallows ("Issuer Name: Yes"). These must never become party
+# names on a deal container.
+_JUNK_NAMES = {
+    "yes", "no", "n/a", "na", "n.a.", "tbd", "tbc", "none", "nil",
+    "true", "false", "y", "n", "x", "-", "--", "name", "unknown", "other",
+}
+
+
+def _clean_name(value: str | None) -> str | None:
+    """Reject junk name captures: boolean answers, placeholders, no letters."""
+    if not value:
+        return None
+    v = value.strip(" \t:;-–—*.")
+    if not v or v.lower() in _JUNK_NAMES:
+        return None
+    if sum(ch.isalpha() for ch in v) < 2:
+        return None
+    return v
+
+
+def _plausible_amount(raw: str) -> bool:
+    """A money amount has magnitude: 4+ integer digits or a thousands
+    separator. This rejects page numbers, clause ids, per-unit prices and
+    percentages that the generic fallback patterns would otherwise grab."""
+    digits = raw.replace(",", "").split(".")[0]
+    return len(digits) >= 4 or "," in raw
+
+
+def _is_date_fragment(text: str, start: int, end: int) -> bool:
+    """True when the number at text[start:end] is part of a date like
+    22.12.2022 / 12/2022 / 2022-06-30 — never a money amount."""
+    before = text[start - 1] if start > 0 else ""
+    after = text[end] if end < len(text) else ""
+    if before in "./-" and start >= 2 and text[start - 2].isdigit():
+        return True
+    if after in "./-" and end + 1 < len(text) and text[end + 1].isdigit():
+        return True
+    return False
+
+
+def _money_after(text: str, keyword_pattern: str, window: int = 80):
+    """Keyword-anchored money lookup: `keyword ... CUR 1,234` / `1,234 CUR`.
+
+    Returns (amount, currency) — currency is None when the matched number
+    carried no explicit currency token. Every candidate must pass the
+    magnitude plausibility guard, so "TRY 5 per unit" or "Page 5 of 34"
+    can never be mistaken for a commitment amount.
+    """
+    cur_amt = re.compile(r"(" + _CURRENCY + r")[\s$]*(" + _AMOUNT + r")", re.IGNORECASE)
+    amt_cur = re.compile(r"(" + _AMOUNT + r")\s*(" + _CURRENCY + r")", re.IGNORECASE)
+    for m in re.finditer(keyword_pattern, text, re.IGNORECASE):
+        segment = text[m.end(): m.end() + window]
+        offset = m.end()
+        for mm in cur_amt.finditer(segment):
+            if _plausible_amount(mm.group(2)) and not _is_date_fragment(
+                    text, offset + mm.start(2), offset + mm.end(2)):
+                return float(mm.group(2).replace(",", "")), mm.group(1).upper()[:3]
+        for mm in amt_cur.finditer(segment):
+            if _plausible_amount(mm.group(1)) and not _is_date_fragment(
+                    text, offset + mm.start(1), offset + mm.end(1)):
+                return float(mm.group(1).replace(",", "")), mm.group(2).upper()[:3]
+        for mm in re.finditer(_AMOUNT, segment):
+            if _plausible_amount(mm.group(1)) and not _is_date_fragment(
+                    text, offset + mm.start(), offset + mm.end()):
+                return float(mm.group(1).replace(",", "")), None
+    return None, None
+
+
+def _money_anywhere(text: str):
+    """Fallback: the first plausible, explicitly-currency-denominated amount
+    in the document. A bare number is never money — without a currency token
+    it could be a page number, a clause id or a per-unit price."""
+    cur_amt = re.compile(r"(" + _CURRENCY + r")[\s$]*(" + _AMOUNT + r")", re.IGNORECASE)
+    for m in cur_amt.finditer(text):
+        if _plausible_amount(m.group(2)) and not _is_date_fragment(text, m.start(2), m.end(2)):
+            return float(m.group(2).replace(",", "")), m.group(1).upper()[:3]
+    return None, None
+
 
 def _grep(pattern: str, text: str) -> str | None:
     m = re.search(pattern, text, re.IGNORECASE)
@@ -44,8 +123,8 @@ def _hit(pattern: str, text: str) -> bool:
 
 
 def extract_loan(text: str) -> tuple[LoanExtraction | None, float]:
-    issuer = _grep(r"(?:borrower|obligor)[\s:]+([^,\n]{3,80})", text)
-    lender = _grep(r"(?:lender|bank)[\s:]+([^,\n]{3,80})", text)
+    issuer = _clean_name(_grep(r"(?:borrower|obligor)[\s:]+([^,\n]{3,80})", text))
+    lender = _clean_name(_grep(r"(?:lender|bank)[\s:]+([^,\n]{3,80})", text))
     # "Principal: USD 2,500,000" — skip the colon/space/currency token, then
     # capture the amount. _CURRENCY is a non-capturing group, so the only
     # capture group is the numeric amount in _AMOUNT.
@@ -81,7 +160,7 @@ def extract_loan(text: str) -> tuple[LoanExtraction | None, float]:
 def extract_sukuk(text: str) -> tuple[SukukExtraction | None, float]:
     from app.models.enums import ShariahContractType
 
-    issuer = _grep(r"(?:issuer|originator)[\s:]+([^,\n]{3,80})", text)
+    issuer = _clean_name(_grep(r"(?:issuer|originator)[\s:]+([^,\n]{3,80})", text))
     total = _amount(r"(?:total|issue|size)[^0-9\n]{0,40}?[\s$]*" + _CURRENCY + r"?[\s$]*" + _AMOUNT, text)
     cur = (_grep(_CURRENCY, text) or "USD").upper()[:3]
     profit_raw = _grep(r"(?:profit rate)[\s:]*([\d.]+)\s*%?", text)
@@ -131,15 +210,23 @@ def extract_capital_call(text: str) -> tuple[CapitalCallExtraction | None, float
     wire instructions. The source_text (the text window the amounts were
     parsed from) is captured for audit trail purposes.
     """
-    funder = _grep(r"(?:call(?:ed|ing)? to|notice.*(?:capital|call|contribution).*from|lp|limited partner)[^\n,]*:\s*([^\n,]{2,80})", text)
+    funder = _clean_name(_grep(r"(?:call(?:ed|ing)? to|notice.*(?:capital|call|contribution).*from|lp|limited partner)[^\n,]*:\s*([^\n,]{2,80})", text))
     # Fallback: look for "Name:" near fund names
     if not funder:
-        funder = _grep(r'(?:fund|lp|limited partner)(?:\s+name)?[:\s]+([^\n,]{2,80})', text)
+        funder = _clean_name(_grep(r'(?:fund|lp|limited partner)(?:\s+name)?[:\s]+([^\n,]{2,80})', text))
     currency = (_grep(_CURRENCY, text) or "USD").upper()[:3]
-    owing = _amount(r"(?:capital call|called|amount (?:(?:to )?be )?due|contribution|amount due|call amount|together with)[^0-9\n]{0,50}?[\s$]*" + _CURRENCY + r"?[\s$]*" + _AMOUNT, text)
-    # Fallback patterns for the called amount
+    owing, owing_cur = _money_after(
+        text,
+        r"(?:capital call|called|amount (?:(?:to )?be )?due|contribution|amount due|call amount|together with)",
+        window=60,
+    )
+    if owing_cur:
+        currency = owing_cur
+    # Fallback: explicit currency required — a bare number is never money.
     if owing is None:
-        owing = _amount(r"(?:usd|eur|gbp|myr|aed|sar|sgd|idr|try)?[\s$]*" + _AMOUNT + r"\s*(?:million|mio|k|thousand)?", text)
+        owing, owing_cur = _money_anywhere(text)
+        if owing_cur:
+            currency = owing_cur
     due_raw = _grep(r"(?:due date|call date|payment date|expire)[:\s]+([\d/\-]{4,20})", text)
     due_date = None
     if due_raw:
@@ -175,32 +262,33 @@ def extract_subscription(text: str) -> tuple[SubscriptionAgreementExtraction | N
     Looks for: fund name, investor name, commitment amount, currency,
     payment due date, and payment instructions.
     """
-    fund_name = _grep(
+    fund_name = _clean_name(_grep(
         r"(?:fund|issuer|vehicle)\s*name[\s:]+([^\n,]{2,80})",
         text
-    )
+    ))
     if fund_name:
         fund_name = fund_name.lstrip(": \t").strip()
     if not fund_name:
-        fund_name = _grep(r"(?:on behalf of|for the account of)[^\n]{0,50}?([^\n,]{2,80})", text)
+        fund_name = _clean_name(_grep(r"(?:on behalf of|for the account of)[^\n]{0,50}?([^\n,]{2,80})", text))
 
-    investor_name = _grep(
+    investor_name = _clean_name(_grep(
         r"(?:investor|subscriber|limited partner|lp)\s*name[\s:]+([^\n,]{2,80})",
         text
-    )
+    ))
     if investor_name:
         investor_name = investor_name.lstrip(": \t").strip()
     if not investor_name:
-        investor_name = _grep(r"(?:the undersigned|investor name)[^\n]{0,30}?([^\n,]{2,80})", text)
+        investor_name = _clean_name(_grep(r"(?:the undersigned|investor name)[^\n]{0,30}?([^\n,]{2,80})", text))
 
-    commitment = _amount(
-        r"(?:capital|subscription|commitment|committed)[^\n]{0,50}?(?:amount|commitment)?[^\n]{0,30}?" + _CURRENCY + r"?[\s$]*" + _AMOUNT,
-        text
+    commitment, commit_cur = _money_after(
+        text, r"(?:capital|subscription|commitment|committed)", window=80,
     )
     if commitment is None:
-        commitment = _amount(r"(?:usd|eur|gbp|myr|aed|sar|sgd|idr|try)?[\s$]*" + _AMOUNT + r"\s*(?:million|mio|k|thousand)?", text)
+        # Fallback: explicit currency required — a bare number is never money
+        # (a page number, a clause id or a per-unit price is not a commitment).
+        commitment, commit_cur = _money_anywhere(text)
 
-    currency = (_grep(_CURRENCY, text) or "USD").upper()[:3]
+    currency = (commit_cur or _grep(_CURRENCY, text) or "USD").upper()[:3]
 
     payment_due_raw = _grep(r"(?:payment|due|closing|subscription)\s*date[\s:]+([\d/\-]{4,20})", text)
     payment_due_date = None

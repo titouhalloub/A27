@@ -39,6 +39,24 @@ Underlying Asset: Solar plant and transmission assets
 BAD_LOAN_TEXT = """This is a restaurant menu.
 No borrower, no lender, no principal, no rates anywhere in here."""
 
+# Mimics the real Elzaad subscription agreement failure: a form-style
+# questionnaire ("... Name: Yes") plus per-unit pricing and page markers.
+SUB_JUNK_TEXT = """SUBSCRIPTION AGREEMENT
+Elzaad Sukuk Fund — Subscription Document V8 22.12.2022
+Fund Name: Yes
+Investor Name: No
+The units are offered at TRY 5 per unit subject to clause 4.2.
+Page 5 of 34.
+"""
+
+SUB_GOOD_TEXT = """SUBSCRIPTION AGREEMENT
+Fund Name: Elzaad Sukuk Fund
+Investor Name: Gulf Holdings LLC
+Subscription Amount: TRY 25,000,000
+Payment Date: 2023-06-30
+Payment instructions: wire to account number 00112233
+"""
+
 
 def test_loan_extraction_full_confidence(db):
     outcome = run_extraction(LOAN_TEXT, DocumentType.LOAN_AGREEMENT.value)
@@ -55,6 +73,44 @@ def test_phase4_malformed_routes_to_review():
     outcome = run_extraction(BAD_LOAN_TEXT, DocumentType.LOAN_AGREEMENT.value)
     assert outcome.routed_to_review is True
     assert outcome.extraction is None
+
+
+def test_subscription_junk_answers_and_bare_numbers_never_become_deal_data():
+    """Regression (Elzaad subscription agreement): the dashboard showed
+    Issuer 'Yes' and Amount '5 TRY'. Form answers must not become party
+    names, and bare numbers (per-unit price, page marker, document date)
+    must never become a commitment amount. Honest failure -> review."""
+    outcome = run_extraction(SUB_JUNK_TEXT, DocumentType.SUBSCRIPTION_AGREEMENT.value)
+    data = (outcome.extracted_data or {}).get("data", {})
+    assert data.get("fund_name") != "Yes"
+    assert data.get("investor_name") != "No"
+    if outcome.extraction is not None:
+        assert outcome.extraction.commitment_amount != 5.0
+
+
+def test_subscription_extracts_amount_and_currency_from_anchor():
+    outcome = run_extraction(SUB_GOOD_TEXT, DocumentType.SUBSCRIPTION_AGREEMENT.value)
+    assert outcome.extraction is not None
+    data = outcome.extracted_data["data"]
+    assert data["fund_name"] == "Elzaad Sukuk Fund"
+    assert data["commitment_amount"] == 25_000_000.0
+    assert data["currency"] == "TRY"
+
+
+def test_subscription_date_is_never_a_commitment_amount():
+    """'Subscription Document V8 22.12.2022' — the document date must not be
+    parsed as money even though it follows a keyword and has 4+ digits."""
+    outcome = run_extraction(
+        "SUBSCRIPTION AGREEMENT\nSubscription Document V8 dated 22.12.2022\n"
+        "Investor: Acme Holdings Ltd\nNo commitment figures stated here.",
+        DocumentType.SUBSCRIPTION_AGREEMENT.value,
+    )
+    data = (outcome.extracted_data or {}).get("data", {})
+    if outcome.extraction is not None:
+        assert outcome.extraction.commitment_amount != 2212.0
+        assert outcome.extraction.commitment_amount != 22.12
+    assert data.get("commitment_amount") != 2212.0
+    assert data.get("commitment_amount") != 22.12
 
 
 def test_sukuk_extraction_parses_al_ijara_without_silent_default():
