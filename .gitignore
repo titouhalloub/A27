@@ -33,3 +33,8 @@ _server.pid
 /Warba_Bank_Base_Prospectus_-_final.pdf
 # Uploaded original documents (may contain PII)
 uploads/
+# Local runtime logs
+server_out.txt
+server_err.txt
+server_log.txt
+pytest_*.txt
