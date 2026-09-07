@@ -490,7 +490,7 @@ function renderResults(runResult, ledger) {
   } else {
     fields.push(["Contract type", inst.shariah_contract_type]);
     fields.push(["Underlying asset", inst.underlying_asset_description]);
-    fields.push(["__divider__", "Deal container settings (created for this run)"]);
+    fields.push(["__divider__", "Deal container (values from the document where extracted)"]);
     fields.push(["Issuer", inst.issuer_name]);
     fields.push(["Transaction", inst.transaction_type]);
     fields.push(["Amount", inst.amount != null ? Number(inst.amount).toLocaleString() + " " + (inst.currency || "USD") : null]);

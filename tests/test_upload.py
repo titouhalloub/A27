@@ -58,6 +58,37 @@ def test_upload_txt_runs_the_full_pipeline(client):
     assert body["document"]["status"] == "processed"
     assert body["outcome"] == "not_applicable"
     assert "LOAN AGREEMENT" in body["extracted_text"]
+    # The deal container must be backfilled from the extracted record -- not
+    # left at creation-time placeholders ("Upload Test Issuer" / 1,000,000 USD).
+    inst = body["instrument"]
+    assert inst["issuer_name"] == "Alpha Manufacturing Sdn Bhd"
+    assert inst["amount"] == 2_500_000.0
+
+
+SUKUK_TEXT = """SUKUK CERTIFICATE
+Issuer: Petra Energy Sukuk SPV
+Total Issue Size: USD 500,000,000
+Structure: al-Ijara
+Profit Rate: 4.25% per annum"""
+
+
+def test_upload_sukuk_backfills_deal_container_and_corrects_txn(client):
+    # The deal container was created as a loan; the document is a sukuk.
+    iid = _make_instrument(client, mode="traditional", txn="loan")
+    r = client.post(
+        f"/instruments/{iid}/documents/upload",
+        headers=HEADERS,
+        files={"file": ("sukuk.txt", SUKUK_TEXT.encode("utf-8"), "text/plain")},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    inst = body["instrument"]
+    # Backfilled from the extracted record, not creation-time placeholders.
+    assert inst["issuer_name"] == "Petra Energy Sukuk SPV"
+    assert inst["amount"] == 500_000_000.0
+    assert inst["currency"] == "USD"
+    # The confident classification corrected the container's transaction type.
+    assert inst["transaction_type"] == "sukuk"
 
 
 def test_upload_unsupported_type_rejected(client):

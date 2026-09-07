@@ -16,6 +16,7 @@ from app.models.enums import (
     LedgerEntryType,
     ShariahContractType,
     ShariahReviewStatus,
+    TransactionType,
 )
 from app.models.orm import Document, Instrument, LedgerEntry
 from app.telemetry import get_tracer
@@ -33,6 +34,55 @@ class PipelineResult:
         return (f"<PipelineResult doc={self.document.id} "
                 f"type={self.document.document_type.value} "
                 f"compliance={self.outcome}>")
+
+
+_DOC_TYPE_TO_TRANSACTION_TYPE: dict[DocumentType, TransactionType] = {
+    DocumentType.LOAN_AGREEMENT: TransactionType.LOAN,
+    DocumentType.TERM_SHEET: TransactionType.LOAN,
+    DocumentType.SUKUK_CERTIFICATE: TransactionType.SUKUK,
+    DocumentType.CAPITAL_CALL_NOTICE: TransactionType.FUND_INTEREST,
+    DocumentType.SUBSCRIPTION_AGREEMENT: TransactionType.FUND_INTEREST,
+}
+
+
+def _backfill_deal_container(
+    instrument: Instrument,
+    classification: ClassificationResult,
+    extracted_data: dict | None,
+) -> None:
+    """Carry the deal fields the pipeline read from the document onto the instrument.
+
+    The instrument is created by the caller as a container (often with placeholder
+    values like "Demo Issuer" / 1,000,000 USD ). Once extraction has read the
+    actual document, those creation-time placeholders must not keep shadowing
+    what the document actually says. Every write is guarded: a doc that lacks a
+    field never blanks a real one, and nothing is written when extraction failed..
+    """
+    data = (extracted_data or {}).get("data", {})
+    for key in ("issuer_name", "funder_name", "fund_name", "company_name"):
+        if data.get(key):
+            instrument.issuer_name = data[key]
+            break
+    for key in (
+        "principal_amount",
+        "total_size",
+        "commitment_amount",
+        "capital_owing",
+        "purchase_price",
+    ):
+        amount = data.get(key)
+        if amount is not None:
+            instrument.amount = amount
+            break
+    if data.get("currency"):
+        instrument.currency = data["currency"]
+
+    # The classified document type is already past the 0.75 confidence gate
+    # here (UNCLASSIFIED returned earlier in process_document), so correcting
+    # the container's transaction type is safe and never a guess.
+    txn = _DOC_TYPE_TO_TRANSACTION_TYPE.get(classification.document_type)
+    if txn is not None:
+        instrument.transaction_type = txn
 
 
 def process_document(session: Session, instrument: Instrument,
@@ -87,6 +137,14 @@ def process_document(session: Session, instrument: Instrument,
 
     # 2. Extraction: typed -> JSONB with schema name + version (gap #2).
     outcome = run_extraction(text, classification.document_type.value)
+
+    # The instrument container was created by the caller (often with placeholder
+    # values); once extraction read the actual document, carry the deal fields
+    # it found onto the instrument so the UI/showed deal container reflects the
+    # document, not creation-time defaults. Done even when the extraction routed
+    # to review (a valid extraction model still names the issuer/amount/currency).
+    if outcome.extraction is not None:
+        _backfill_deal_container(instrument, classification, outcome.extracted_data)
 
     if outcome.extraction is None or outcome.routed_to_review:
         doc = make_doc(classification.document_type, classification.confidence,
