@@ -122,6 +122,35 @@ NON_CLASSIFIABLE: set[DocumentType] = {
     DocumentType.KYC,
 }
 
+# Marketing/reference material markers. A fund factsheet or performance
+# sheet shares vocabulary with contracts ("sukuk", "fund", "class A units")
+# and used to rank as loan_agreement at exactly 0.75. These phrases belong
+# to factsheets, not agreements — two or more is decisive evidence the
+# document is not a contract of any type.
+FACTSHEET_MARKERS: tuple[str, ...] = (
+    "factsheet",
+    "fact sheet",
+    "top holdings",
+    "fund performance",
+    "fund objective",
+    "fund objectives",
+    "fund inception",
+    "base currency",
+    "fund information",
+    "management fee",
+    "custodian fee",
+    "trustee fee",
+    "% of assets",
+    "annualised return",
+    "annualized return",
+    "cumulative return",
+    "as at 30",
+    "as at 31",
+    "launch date",
+    "unit price",
+    "nav per unit",
+)
+
 
 @dataclass
 class ClassificationResult:
@@ -158,6 +187,18 @@ def classify_with_heuristics(text: str, filename: str = "") -> ClassificationRes
     t = _normalise(text)
     # Normalise filename: dashes/underscores -> spaces, lowercased
     fname = re.sub(r"[-_.]+", " ", filename.lower()) if filename else ""
+
+    # Factsheet / marketing material short-circuit: these documents share
+    # contract vocabulary ("sukuk", "fund", "units") and used to sneak past
+    # the gate as loan_agreement at exactly 0.75. Two or more factsheet
+    # markers means this is reference material, not a contract — it can
+    # never be classified, only reviewed by a human.
+    fact_markers = sum(1 for m in FACTSHEET_MARKERS if m in t)
+    if fact_markers >= 2:
+        return ClassificationResult(
+            document_type=DocumentType.UNCLASSIFIED,
+            confidence=0.5,
+        )
 
     loan_hits = _keyword_score(t, LOAN_KEYWORDS)
     sukuk_hits = _keyword_score(t, SUKUK_KEYWORDS)

@@ -98,3 +98,24 @@ def test_llm_type_string_is_canonicalised():
     assert _parse_llm_document_type("sukuk-certificate") == DocumentType.SUKUK_CERTIFICATE
     assert _parse_llm_document_type("??") == DocumentType.UNCLASSIFIED
     assert _parse_llm_document_type("") == DocumentType.UNCLASSIFIED
+
+
+def test_fund_factsheet_is_never_classified_as_a_contract():
+    """Regression (Principal Islamic Malaysia fund factsheet): contract
+    vocabulary ('sukuk', 'fund', 'units') ranked it loan_agreement at
+    exactly 0.75, sneaking past the gate. Factsheet markers ('top
+    holdings', 'fund performance', 'base currency', ...) are decisive:
+    the document is UNCLASSIFIED and routes to human review."""
+    factsheet = """
+    Principal Islamic Malaysia Government Sukuk Fund - Class A MYR
+    Fund Objective Fund Performance Fund Information
+    ISIN Code MYU1000HR006 Currency MYR Base Currency MYR
+    Fund Inception 21 Jun 2021 Domicile Malaysia
+    Top Holdings Country % of Assets
+    GII Murabahah Malaysia 16.46 Beta 1.10
+    Total Returns 1.14 percent Management Fee 1.25% p.a.
+    Unit Price NAV per unit as at 31 Dec 2025
+    """
+    result = classify_document(factsheet, filename="fund_factsheet.pdf")
+    assert result.document_type == DocumentType.UNCLASSIFIED
+    assert result.confidence < 0.75

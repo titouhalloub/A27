@@ -490,13 +490,33 @@ function renderResults(runResult, ledger) {
   } else {
     fields.push(["Contract type", inst.shariah_contract_type]);
     fields.push(["Underlying asset", inst.underlying_asset_description]);
-    fields.push(["__divider__", "Deal container (values from the document where extracted)"]);
+    const extractionGate = 0.85;
+    const extractionCleared = (doc.extraction_confidence || 0) >= extractionGate;
+    fields.push(["__divider__",
+      extractionCleared
+        ? "Deal container (values from the document where extracted)"
+        : "Deal container (creation settings \u2014 unchanged: extraction below the 85% gate)"]);
     fields.push(["Issuer", inst.issuer_name]);
     fields.push(["Transaction", inst.transaction_type]);
     fields.push(["Amount", inst.amount != null ? Number(inst.amount).toLocaleString() + " " + (inst.currency || "USD") : null]);
   }
+  // Routing status: the pipeline routes to human review whenever
+  // classification or extraction misses its confidence gate. That is the
+  // *intended* outcome for documents it cannot read confidently -- say so
+  // explicitly instead of leaving the dashboard silent about it.
+  const routed = runResult.routed_to_review === true || (doc.status || "").toLowerCase() === "review_needed";
   const fl = document.getElementById("fields-list");
   fl.innerHTML = "";
+  if (routed) {
+    const note = document.createElement("div");
+    note.className = "check fail";
+    note.style.marginBottom = "10px";
+    note.innerHTML =
+      '<span class="mark">!</span><span class="text"><b>Routed to human review.</b> ' +
+      "The pipeline could not read this document confidently, so nothing was " +
+      "written to the deal container \u2014 it is flagged for review, not guessed.</span>";
+    fl.appendChild(note);
+  }
   if (unclassified) {
     const note = document.createElement("div");
     note.className = "check fail";
