@@ -255,6 +255,27 @@ def classify_with_heuristics(text: str, filename: str = "") -> ClassificationRes
     return ClassificationResult(document_type=best_type, confidence=confidence)
 
 
+def _parse_llm_document_type(raw: str) -> DocumentType:
+    """Canonicalise an LLM's free-form type string into a DocumentType.
+
+    Different models return the same concept differently ("Loan Agreement",
+    "loan-agreement", "sha"). We lowercase, squash spaces/hyphens to
+    underscores, and map the short prompt aliases to their full enum value.
+    Anything unrecognised -> UNCLASSIFIED (never a guess, never a crash).
+    """
+    norm = re.sub(r"[\s-]+", "_", (raw or "").strip().lower())
+    aliases = {
+        "sha": DocumentType.SHA,
+        "ppm": DocumentType.PPM,
+        "lpa": DocumentType.LPA,
+        "kyc_document": DocumentType.KYC,
+        "financials": DocumentType.FINANCIAL_STATEMENT,
+    }
+    for slug, doc_type in DocumentType.__members__.items():
+        aliases[doc_type.value] = doc_type
+    return aliases.get(norm, DocumentType.UNCLASSIFIED)
+
+
 def _classify_with_openai_compatible(
     text: str,
     api_key: str,
@@ -288,17 +309,41 @@ def _classify_with_openai_compatible(
     )
     resp = client.chat.completions.create(
         model=model,
-        max_tokens=200,
+        max_tokens=256,
         temperature=0.0,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": text[:20000]},
         ],
     )
-    raw = resp.choices[0].message.content.strip() if resp.choices else "{}"
-    payload = json.loads(raw)
-    doc_type = DocumentType(payload.get("document_type", "unclassified"))
-    confidence = float(payload.get("confidence", 0.0))
+    raw = resp.choices[0].message.content.strip() if resp.choices else ""
+    # Free-tier providers can occasionally return an empty / "{}" response.
+    # Retry once before giving up -- a one-shot retry is cheaper than
+    # a wrong downstream decision and still bounded by the confidence gate.
+    if not raw or raw.strip().lower() in ("{}", "null", "[object object]"):
+        resp = client.chat.completions.create(
+            model=model,
+            max_tokens=256,
+            temperature=0.0,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": text[:20000]},
+            ],
+        )
+        raw = resp.choices[0].message.content.strip() if resp.choices else ""
+    try:
+        payload = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        payload = {"document_type": "unclassified", "confidence": 0.0}
+    doc_type = _parse_llm_document_type(payload.get("document_type", "unclassified"))
+    try:
+        confidence = float(payload.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if doc_type == DocumentType.UNCLASSIFIED and payload.get("document_type", "").strip().lower() != "unclassified":
+        # The LLM named something we can't map. Never guess: force UNCLASSIFIED
+        # with a low confidence so the gate routes it to human review.
+        confidence = min(confidence, 0.5)
     return ClassificationResult(
         document_type=doc_type,
         confidence=confidence,

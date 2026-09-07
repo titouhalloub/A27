@@ -83,3 +83,18 @@ def test_llm_outage_degrades_to_heuristics_not_500(monkeypatch):
     # The heuristic path is deterministic and knows LOAN_TEXT is a loan.
     assert result.document_type == DocumentType.LOAN_AGREEMENT
     assert result.backend == "heuristic"
+def test_llm_type_string_is_canonicalised():
+    """LLMs return the same class in free-form ("Loan Agreement", "sha",
+    "PPM"). The parser must map them to the canonical enum value,and
+    never crash on an unknown value -- unknown -> UNCLASSIFIED."""
+    from app.classification import _parse_llm_document_type
+
+    assert _parse_llm_document_type("Loan Agreement") == DocumentType.LOAN_AGREEMENT
+    assert _parse_llm_document_type("loan_agreement") == DocumentType.LOAN_AGREEMENT
+    assert _parse_llm_document_type("loan-agreement") == DocumentType.LOAN_AGREEMENT
+    assert _parse_llm_document_type("sha") == DocumentType.SHA
+    assert _parse_llm_document_type("PPM") == DocumentType.PPM
+    assert _parse_llm_document_type("lpa") == DocumentType.LPA
+    assert _parse_llm_document_type("sukuk-certificate") == DocumentType.SUKUK_CERTIFICATE
+    assert _parse_llm_document_type("??") == DocumentType.UNCLASSIFIED
+    assert _parse_llm_document_type("") == DocumentType.UNCLASSIFIED
