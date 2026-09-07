@@ -21,7 +21,19 @@ from app.schemas import (
     extract_result_to_document_data,
 )
 
-_CURRENCY = r"(?:USD|EUR|GBP|MYR|AED|SAR|SGD|IDR|TRY)"
+_CURRENCY = r"\b(?:USD|EUR|GBP|MYR|AED|SAR|SGD|IDR|TRY)\b"
+# Optional-currency wrapper for embedding in larger patterns (a bare "?" after
+# _CURRENCY would try to quantify the trailing \b -> "nothing to repeat").
+_CUR_OPT = r"(?:" + _CURRENCY + r")?"
+# Currency codes are UPPERCASE tokens: matching them case-insensitively read
+# 'TRY' out of 'Country' and 'the try blocks' (real regression). Standalone
+# lookups use this case-sensitive compiled pattern.
+_CURRENCY_RE = re.compile(_CURRENCY)
+
+
+def _currency_of(text: str) -> str | None:
+    m = _CURRENCY_RE.search(text)
+    return m.group(0) if m else None
 _AMOUNT = r"(\d+(?:,\d{3})*(?:\.\d+)?)"
 
 # Spelled-out currencies in contract prose ("amount in United States Dollars").
@@ -119,8 +131,8 @@ def _money_after(text: str, keyword_pattern: str, window: int = 80):
     magnitude plausibility guard, so "TRY 5 per unit" or "Page 5 of 34"
     can never be mistaken for a commitment amount.
     """
-    cur_amt = re.compile(r"(" + _CURRENCY + r")[\s$]*(" + _AMOUNT + r")", re.IGNORECASE)
-    amt_cur = re.compile(r"(" + _AMOUNT + r")\s*(" + _CURRENCY + r")", re.IGNORECASE)
+    cur_amt = re.compile(r"(" + _CURRENCY + r")[\s$]*(" + _AMOUNT + r")")
+    amt_cur = re.compile(r"(" + _AMOUNT + r")\s*(" + _CURRENCY + r")")
     for m in re.finditer(keyword_pattern, text, re.IGNORECASE):
         segment = text[m.end(): m.end() + window]
         offset = m.end()
@@ -150,7 +162,7 @@ def _money_anywhere(text: str):
     """Fallback: the first plausible, explicitly-currency-denominated amount
     in the document. A bare number is never money — without a currency token
     it could be a page number, a clause id or a per-unit price."""
-    cur_amt = re.compile(r"(" + _CURRENCY + r")[\s$]*(" + _AMOUNT + r")", re.IGNORECASE)
+    cur_amt = re.compile(r"(" + _CURRENCY + r")[\s$]*(" + _AMOUNT + r")")
     for m in cur_amt.finditer(text):
         if _plausible_amount(m.group(2)) and not _is_date_fragment(text, m.start(2), m.end(2)):
             return float(m.group(2).replace(",", "")), m.group(1).upper()[:3]
@@ -179,8 +191,13 @@ def _grep(pattern: str, text: str) -> str | None:
 
 
 def _amount(pattern: str, text: str) -> float | None:
+    """Grep for a money pattern and float it — but only when the captured
+    number is a plausible money magnitude. Without this guard a factsheet
+    chart value like '1.14' next to the word 'Total' became total_size."""
     v = _grep(pattern, text)
-    return float(v.replace(",", "")) if v else None
+    if not v:
+        return None
+    return float(v.replace(",", "")) if _plausible_amount(v) else None
 
 
 def _hit(pattern: str, text: str) -> bool:
@@ -193,8 +210,8 @@ def extract_loan(text: str) -> tuple[LoanExtraction | None, float]:
     # "Principal: USD 2,500,000" — skip the colon/space/currency token, then
     # capture the amount. _CURRENCY is a non-capturing group, so the only
     # capture group is the numeric amount in _AMOUNT.
-    principal = _amount(r"(?:principal|facility|loan)[^0-9\n]{0,40}?[\s$]*" + _CURRENCY + r"?[\s$]*" + _AMOUNT, text)
-    currency = (_grep(_CURRENCY, text) or "USD").upper()[:3]
+    principal = _amount(r"(?:principal|facility|loan)[^0-9\n]{0,40}?[\s$]*" + _CUR_OPT + r"[\s$]*" + _AMOUNT, text)
+    currency = (_currency_of(text) or "USD").upper()[:3]
     rate_raw = _grep(r"(?:interest rate)[\s:]*([\d.]+)\s*%?", text)
     rate = float(rate_raw) / 100.0 if rate_raw else None
     maturity = _grep(r"(?:maturity)[\s:]*(?:date)?[\s:]*([\d/\-]{4,20})", text)
@@ -226,8 +243,8 @@ def extract_sukuk(text: str) -> tuple[SukukExtraction | None, float]:
     from app.models.enums import ShariahContractType
 
     issuer = _clean_name(_grep(r"(?:issuer|originator)[\s:]+([^,\n]{3,80})", text))
-    total = _amount(r"(?:total|issue|size)[^0-9\n]{0,40}?[\s$]*" + _CURRENCY + r"?[\s$]*" + _AMOUNT, text)
-    cur = (_grep(_CURRENCY, text) or "USD").upper()[:3]
+    total = _amount(r"(?:total|issue|size)[^0-9\n]{0,40}?[\s$]*" + _CUR_OPT + r"[\s$]*" + _AMOUNT, text)
+    cur = (_currency_of(text) or "USD").upper()[:3]
     profit_raw = _grep(r"(?:profit rate)[\s:]*([\d.]+)\s*%?", text)
     fatwa = _grep(r"(?:fatwa[^:\n]*|shariah[^:\n]*)[\s:]+([^\n]{3,150})", text)
     ctype = _grep(
@@ -279,7 +296,7 @@ def extract_capital_call(text: str) -> tuple[CapitalCallExtraction | None, float
     # Fallback: look for "Name:" near fund names
     if not funder:
         funder = _clean_name(_grep(r'(?:fund|lp|limited partner)(?:\s+name)?[:\s]+([^\n,]{2,80})', text))
-    currency = (_grep(_CURRENCY, text) or "USD").upper()[:3]
+    currency = (_currency_of(text) or "USD").upper()[:3]
     owing, owing_cur = _money_after(
         text,
         r"(?:capital call|called|amount (?:(?:to )?be )?due|contribution|amount due|call amount|together with)",
@@ -358,7 +375,7 @@ def extract_subscription(text: str) -> tuple[SubscriptionAgreementExtraction | N
         # (a page number, a clause id or a per-unit price is not a commitment).
         commitment, commit_cur = _money_anywhere(text)
 
-    currency = (commit_cur or _grep(_CURRENCY, text)
+    currency = (commit_cur or _currency_of(text)
                 or _spoken_currency(text) or "USD").upper()[:3]
 
     payment_due_raw = _grep(r"(?:payment|due|closing|subscription)\s*date[\s:]+([\d/\-]{4,20})", text)

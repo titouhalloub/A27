@@ -301,6 +301,47 @@ def test_subscription_trailing_comma_list_punctuation_is_not_amount():
     assert extraction.currency == "USD"
 
 
+def test_currency_word_boundary_and_amount_magnitude_guard():
+    """Regression (Malaysia fund factsheet): 'TRY' was read out of the word
+    'Country' (currency regex had no word boundaries + IGNORECASE) and
+    total_size=1.14 was read from a chart value next to 'Total'. Currency
+    codes must be standalone tokens, and _amount must apply the same
+    magnitude guard as every other money path."""
+    from app.extraction import _amount, _currency_of, _CURRENCY
+
+    assert _currency_of("Country MYR\nBase Currency MYR") == "MYR"
+    assert _currency_of("Top Holdings by Country") is None
+    assert _currency_of("the try blocks in the code") is None
+    assert _currency_of("currency: TRY") == "TRY"
+
+    assert _amount(r"(?:total|size)[^0-9\n]{0,40}?[\s$]*" + r"(?:" + _CURRENCY + r")?[\s$]*" +
+                   r"(\d+(?:,\d{3})*(?:\.\d+)?)",
+                   "Total Returns 1.14 percent since inception") is None
+    assert _amount(r"(?:total|size)[^0-9\n]{0,40}?[\s$]*" + r"(?:" + _CURRENCY + r")?[\s$]*" +
+                   r"(\d+(?:,\d{3})*(?:\.\d+)?)",
+                   "Total issue size of MYR 500,000,000") == 500_000_000.0
+
+
+def test_factsheet_text_extracts_nothing_rather_than_garbage():
+    """A marketing fund factsheet (chart labels, percentages, ISIN codes)
+    matches no contract schema — every extractor must return None so the
+    document routes to human review instead of writing junk to the deal."""
+    from app.extraction import extract_loan, extract_sukuk, extract_subscription
+    factsheet = (
+        "Principal Islamic Malaysia Government Sukuk Fund - Class A\n"
+        "Fund Objective Fund Performance\n"
+        "Fund Information ISIN Code MYU1000HR006\n"
+        "Currency MYR Base Currency MYR\n"
+        "Fund Inception 21 Jun 2021 Domicile Malaysia\n"
+        "Top Holdings Country % of Assets\n"
+        "GII Murabahah Malaysia 16.46 Beta 1.10\n"
+        "Total Returns 1.14 percent\n"
+    )
+    for fn in (extract_loan, extract_sukuk, extract_subscription):
+        result, _conf = fn(factsheet)
+        assert result is None, f"{fn.__name__} extracted from a factsheet: {result}"
+
+
 def test_subscription_iban_and_phone_digits_never_become_amounts():
     """Bank-page digits (IBAN '00001745215100', account '745215', building
     '2505') are not money, even with 4+ digits."""
