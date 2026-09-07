@@ -31,3 +31,5 @@ _server.pid
 
 # Local test documents (not part of the repo)
 /Warba_Bank_Base_Prospectus_-_final.pdf
+# Uploaded original documents (may contain PII)
+uploads/

@@ -87,15 +87,20 @@ def _backfill_deal_container(
 
 def process_document(session: Session, instrument: Instrument,
                      gateway: ComplianceGateway, text: str,
-                     filename: str = "document.txt") -> PipelineResult:
-    """Classify -> extract -> compliance gate -> ledger, one transaction."""
+                     filename: str = "document.txt",
+                     file_url: str | None = None) -> PipelineResult:
+    """Classify -> extract -> compliance gate -> ledger, one transaction.
+
+    file_url: where the uploaded original was persisted (uploads/...).
+    None keeps the historical "mem://" placeholder used by text submissions.
+    """
 
     def make_doc(doc_type, class_conf, extract_conf, source, status):
         return Document(
             id=str(uuid4()),
             instrument_id=instrument.id,
             filename=filename,
-            file_url="mem://" + uuid4().hex,
+            file_url=file_url or ("mem://" + uuid4().hex),
             document_type=doc_type,
             classification_confidence=class_conf,
             extraction_confidence=extract_conf,

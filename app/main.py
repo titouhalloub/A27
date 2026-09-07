@@ -276,8 +276,24 @@ def upload_document(
             "classified or extracted -- no guessing.",
         ) from exc
 
+    # Persist the original so file_url in the DB points at a real file the
+    # reviewer (or a developer tuning the extractors) can open later.
+    stored_url: str | None = None
+    try:
+        upload_dir = Path(settings.uploads_dir)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        file.file.seek(0)
+        raw = file.file.read()
+        file.file.seek(0)
+        safe_name = f"{uuid4().hex}_{(file.filename or 'upload').replace('/', '_').replace(chr(92), '_')}"
+        (upload_dir / safe_name).write_bytes(raw)
+        stored_url = str(upload_dir / safe_name)
+    except OSError:
+        stored_url = None  # storage failure must not block ingestion
+
     result = process_document(
-        session, instrument, ComplianceGateway(), text, filename=file.filename or "upload"
+        session, instrument, ComplianceGateway(), text, filename=file.filename or "upload",
+        file_url=stored_url,
     )
     session.refresh(instrument)
 

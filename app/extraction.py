@@ -24,6 +24,34 @@ from app.schemas import (
 _CURRENCY = r"(?:USD|EUR|GBP|MYR|AED|SAR|SGD|IDR|TRY)"
 _AMOUNT = r"(\d[\d,]*\.?\d*)"
 
+# Spelled-out currencies in contract prose ("amount in United States Dollars").
+_SPOKEN_CURRENCY = re.compile(
+    r"(United\s+States\s+Dollars?|U\.?S\.?\s+Dollars?|US\s+Dollars?|US\$|"
+    r"Turkish\s+Lira|Euros?|Pound\s+Sterling|Saudi\s+Riyals?|"
+    r"UAE\s+Dirhams?|Malaysian\s+Ringgit|Singapore\s+Dollars?|"
+    r"Indonesian\s+Rupiah)",
+    re.IGNORECASE,
+)
+_SPOKEN_TO_CODE = {
+    "united states dollars": "USD", "united states dollar": "USD",
+    "u.s. dollars": "USD", "us dollars": "USD", "us$": "USD",
+    "turkish lira": "TRY", "euro": "EUR", "euros": "EUR",
+    "pound sterling": "GBP", "saudi riyal": "SAR", "saudi riyals": "SAR",
+    "uae dirham": "AED", "uae dirhams": "AED",
+    "malaysian ringgit": "MYR", "singapore dollars": "SGD",
+    "singapore dollar": "SGD", "indonesian rupiah": "IDR",
+}
+
+# "$" or "US$" followed by an amount is an explicit USD denomination.
+_DOLLAR_AMOUNT = re.compile(r"(US\$|[\$])[\s]*(" + _AMOUNT + r")", re.IGNORECASE)
+
+
+def _spoken_currency(text: str) -> str | None:
+    m = _SPOKEN_CURRENCY.search(text)
+    if not m:
+        return None
+    return _SPOKEN_TO_CODE.get(m.group(1).lower().replace("  ", " "))
+
 # Form/questionnaire answers and other filler that a lazy `[^\n,]{2,80}` name
 # capture happily swallows ("Issuer Name: Yes"). These must never become party
 # names on a deal container.
@@ -86,6 +114,10 @@ def _money_after(text: str, keyword_pattern: str, window: int = 80):
             if _plausible_amount(mm.group(1)) and not _is_date_fragment(
                     text, offset + mm.start(1), offset + mm.end(1)):
                 return float(mm.group(1).replace(",", "")), mm.group(2).upper()[:3]
+        for mm in _DOLLAR_AMOUNT.finditer(segment):
+            if _plausible_amount(mm.group(2)) and not _is_date_fragment(
+                    text, offset + mm.start(2), offset + mm.end(2)):
+                return float(mm.group(2).replace(",", "")), "USD"
         for mm in re.finditer(_AMOUNT, segment):
             if _plausible_amount(mm.group(1)) and not _is_date_fragment(
                     text, offset + mm.start(), offset + mm.end()):
@@ -101,6 +133,18 @@ def _money_anywhere(text: str):
     for m in cur_amt.finditer(text):
         if _plausible_amount(m.group(2)) and not _is_date_fragment(text, m.start(2), m.end(2)):
             return float(m.group(2).replace(",", "")), m.group(1).upper()[:3]
+    for m in _DOLLAR_AMOUNT.finditer(text):
+        if _plausible_amount(m.group(2)) and not _is_date_fragment(text, m.start(2), m.end(2)):
+            return float(m.group(2).replace(",", "")), "USD"
+    # Amount followed by the currency spelled out in prose, e.g.
+    # "pay the sum of 7,500,000 in United States Dollars".
+    # _AMOUNT and _SPOKEN_CURRENCY.pattern each carry their own capture group.
+    for m in re.finditer(
+            _AMOUNT + r"[\s\S]{0,40}?" + _SPOKEN_CURRENCY.pattern, text, re.IGNORECASE):
+        if _plausible_amount(m.group(1)) and not _is_date_fragment(text, m.start(1), m.end(1)):
+            code = _SPOKEN_TO_CODE.get(m.group(2).lower().replace("  ", " "))
+            if code:
+                return float(m.group(1).replace(",", "")), code
     return None, None
 
 
@@ -270,6 +314,11 @@ def extract_subscription(text: str) -> tuple[SubscriptionAgreementExtraction | N
         fund_name = fund_name.lstrip(": \t").strip()
     if not fund_name:
         fund_name = _clean_name(_grep(r"(?:on behalf of|for the account of)[^\n]{0,50}?([^\n,]{2,80})", text))
+    if not fund_name:
+        # Fund documents name the vehicle in a heading like
+        # "Elzaad Sukuk Fund (The Fund)" — no "Fund Name:" label anywhere.
+        fund_name = _clean_name(_grep(
+            r"([^\n]{2,80}?)\s*\(\s*(?:the\s+)?fund\s*\)", text))
 
     investor_name = _clean_name(_grep(
         r"(?:investor|subscriber|limited partner|lp)\s*name[\s:]+([^\n,]{2,80})",
@@ -288,7 +337,8 @@ def extract_subscription(text: str) -> tuple[SubscriptionAgreementExtraction | N
         # (a page number, a clause id or a per-unit price is not a commitment).
         commitment, commit_cur = _money_anywhere(text)
 
-    currency = (commit_cur or _grep(_CURRENCY, text) or "USD").upper()[:3]
+    currency = (commit_cur or _grep(_CURRENCY, text)
+                or _spoken_currency(text) or "USD").upper()[:3]
 
     payment_due_raw = _grep(r"(?:payment|due|closing|subscription)\s*date[\s:]+([\d/\-]{4,20})", text)
     payment_due_date = None

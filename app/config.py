@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     # app.main.require_api_key.
     api_keys: str = ""
 
+    # --- Uploads ----------------------------------------------------------
+    # Uploaded originals are persisted here so reviewers (and developers
+    # tuning the extractors) can always see the exact document the pipeline
+    # processed -- file_url in the DB points at the saved file.
+    uploads_dir: str = "uploads"
+
 
 @lru_cache
 def get_settings() -> Settings:

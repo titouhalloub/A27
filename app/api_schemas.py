@@ -63,6 +63,7 @@ class DocumentOut(BaseModel):
     id: str
     instrument_id: str
     filename: str
+    file_url: str | None = None
     document_type: DocumentType
     classification_confidence: float
     extraction_confidence: float

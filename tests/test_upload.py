@@ -306,3 +306,28 @@ def test_tesseract_binary_missing_fails_clearly(monkeypatch, tmp_path):
     with pytest.raises(TextExtractionError) as excinfo:
         ocr._ocr_with_tesseract(img_path)
     assert "Tesseract binary" in str(excinfo.value)
+
+
+def test_upload_persists_original_file(client, tmp_path, monkeypatch):
+    """Uploaded originals must be saved under the uploads dir and the
+    document's file_url must point at the stored file (never a mem://
+    placeholder), so reviewers can always open the exact document that
+    the pipeline processed."""
+    from pathlib import Path
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "uploads_dir", str(tmp_path / "uploads"))
+    iid = _make_instrument(client)
+    _attach_kyc(client, iid)
+    r = client.post(
+        f"/instruments/{iid}/documents/upload",
+        headers=HEADERS,
+        files={"file": ("loan-agreement.txt", LOAN_TEXT.encode("utf-8"), "text/plain")},
+    )
+    assert r.status_code == 200
+    file_url = r.json()["document"]["file_url"]
+    assert file_url.startswith(str(tmp_path / "uploads"))
+    stored = Path(file_url)
+    assert stored.exists()
+    assert stored.read_bytes() == LOAN_TEXT.encode("utf-8")

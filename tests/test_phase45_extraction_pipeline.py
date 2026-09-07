@@ -221,3 +221,56 @@ def test_unclassified_document_routes_to_triage(db):
     assert result.document.document_type == DocumentType.UNCLASSIFIED
     assert result.routed is True
     session.close()
+
+
+def test_subscription_heading_anchor_and_dollar_amount():
+    """Fund vehicles are named in headings like 'Elzaad Sukuk Fund (The
+    Fund)' with no 'Fund Name:' label, and amounts may be $ figures.
+    Regression: the real Elzaad subscription agreement caught neither."""
+    from app.extraction import extract_subscription
+    text = (
+        "Elzaad Sukuk Fund (The Fund)\n"
+        "Subscription Agreement\n"
+        "Section 13 - Subscription Amount\n"
+        "The Subscriber hereby subscribes for interests of US$ 5,000,000 in the Fund."
+    )
+    extraction, confidence = extract_subscription(text)
+    assert extraction is not None
+    assert extraction.fund_name == "Elzaad Sukuk Fund"
+    assert extraction.commitment_amount == 5_000_000.0
+    assert extraction.currency == "USD"
+    assert confidence >= 0.6
+
+
+def test_subscription_form_instructions_only_is_not_extracted():
+    """An unfilled instruction checklist ('...amount in United States Dollars
+    in the section titled Subscription Amount', page markers, Yes/No rows)
+    contains no actual commitment — must return None, never '5 TRY'."""
+    from app.extraction import extract_subscription
+    text = (
+        "Elzaad Sukuk Fund (The Fund)\n"
+        "Subscription Agreement\n"
+        "4. Fill in the amount of desired subscription\n"
+        "amount in United States Dollars in the section 13 Yes\n"
+        "titled 'Subscription Amount'\n"
+        "Page 5 of 34\n"
+        "All Yes\n"
+    )
+    extraction, confidence = extract_subscription(text)
+    assert extraction is None
+    assert confidence < 0.6
+
+
+def test_spoken_currency_used_when_no_code_token():
+    """'United States Dollars' spelled out in prose must resolve to USD
+    instead of the hardcoded default silently masking a mismatch."""
+    from app.extraction import extract_subscription
+    text = (
+        "Fund Name: Al Miraj Fund\n"
+        "The Subscriber agrees to pay the sum of 7,500,000\n"
+        "in United States Dollars on the closing date."
+    )
+    extraction, _ = extract_subscription(text)
+    assert extraction is not None
+    assert extraction.commitment_amount == 7_500_000.0
+    assert extraction.currency == "USD"
