@@ -274,3 +274,45 @@ def test_spoken_currency_used_when_no_code_token():
     assert extraction is not None
     assert extraction.commitment_amount == 7_500_000.0
     assert extraction.currency == "USD"
+
+
+def test_subscription_trailing_comma_list_punctuation_is_not_amount():
+    """Regression (Elzaad, round 2): the dashboard showed '13 TRY'. The
+    amount regex matched '13,' from 'pages 12, 13, and 15' list punctuation
+    and the old guard accepted it because it contained a comma. A trailing
+    separator is punctuation, not a thousands grouping — and the real
+    'USD1,000,000' further in the document must win instead."""
+    from app.extraction import _plausible_amount, extract_subscription
+    assert not _plausible_amount("13,")
+    assert not _plausible_amount("13.")
+    assert _plausible_amount("1,000,000")
+    assert not _plausible_amount("12,34")  # invalid grouping
+
+    text = (
+        "Elzaad Sukuk Fund (The Fund)\n"
+        "4. Fill in the desired subscription amount\n"
+        "in United States Dollars in the section 13 Yes\n"
+        "All pages between 18 and 27 (inclusive)\n"
+        "Class A Units have a minimum Subscription Amount of USD1,000,000.\n"
+    )
+    extraction, _ = extract_subscription(text)
+    assert extraction is not None
+    assert extraction.commitment_amount == 1_000_000.0
+    assert extraction.currency == "USD"
+
+
+def test_subscription_iban_and_phone_digits_never_become_amounts():
+    """Bank-page digits (IBAN '00001745215100', account '745215', building
+    '2505') are not money, even with 4+ digits."""
+    from app.extraction import extract_subscription
+    text = (
+        "Fund Name: SICO IX Elzaad Sukuk Sub Acc\n"
+        "IBAN: BH54BBME00001745215100 Currency: USD\n"
+        "Account Number: 001-745215-100\n"
+        "Building 2505, Road 2832, Tel: +973 17515700\n"
+        "Please wire your subscription to the account above."
+    )
+    extraction, _ = extract_subscription(text)
+    if extraction is not None:
+        assert extraction.commitment_amount not in (
+            1745215100.0, 745215.0, 2505.0, 2832.0, 17515700.0)

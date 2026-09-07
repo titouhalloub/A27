@@ -22,7 +22,7 @@ from app.schemas import (
 )
 
 _CURRENCY = r"(?:USD|EUR|GBP|MYR|AED|SAR|SGD|IDR|TRY)"
-_AMOUNT = r"(\d[\d,]*\.?\d*)"
+_AMOUNT = r"(\d+(?:,\d{3})*(?:\.\d+)?)"
 
 # Spelled-out currencies in contract prose ("amount in United States Dollars").
 _SPOKEN_CURRENCY = re.compile(
@@ -58,6 +58,7 @@ def _spoken_currency(text: str) -> str | None:
 _JUNK_NAMES = {
     "yes", "no", "n/a", "na", "n.a.", "tbd", "tbc", "none", "nil",
     "true", "false", "y", "n", "x", "-", "--", "name", "unknown", "other",
+    "witness signature", "signature", "witness", "applicant", "subscriber",
 }
 
 
@@ -74,11 +75,28 @@ def _clean_name(value: str | None) -> str | None:
 
 
 def _plausible_amount(raw: str) -> bool:
-    """A money amount has magnitude: 4+ integer digits or a thousands
-    separator. This rejects page numbers, clause ids, per-unit prices and
-    percentages that the generic fallback patterns would otherwise grab."""
-    digits = raw.replace(",", "").split(".")[0]
-    return len(digits) >= 4 or "," in raw
+    """A money amount has magnitude: 4+ integer digits with valid thousands
+    grouping. Rejects page numbers, clause ids, phone/IBAN digits and list
+    punctuation — e.g. '13,' from 'pages 12, 13, and 15' is a trailing
+    comma, NOT a thousands separator (regression: read as 13.0 TRY)."""
+    int_part = raw.split(".")[0]
+    if int_part != int_part.rstrip(",."):
+        return False  # trailing separator = list/decimal punctuation
+    digits = int_part.replace(",", "")
+    if "," in int_part:
+        groups = int_part.split(",")
+        return len(groups[0]) in (1, 2, 3) and all(len(g) == 3 for g in groups[1:])
+    return len(digits) >= 4
+
+
+def _is_grouped_amount(raw: str) -> bool:
+    """True only for properly thousands-grouped integers ('5,000,000').
+    Used where the number has NO currency attached: without grouping it
+    could be an IBAN, phone or building number."""
+    int_part = raw.split(".")[0]
+    groups = int_part.split(",")
+    return (len(groups) >= 2 and len(groups[0]) in (1, 2, 3)
+            and all(len(g) == 3 for g in groups[1:]))
 
 
 def _is_date_fragment(text: str, start: int, end: int) -> bool:
@@ -119,7 +137,10 @@ def _money_after(text: str, keyword_pattern: str, window: int = 80):
                     text, offset + mm.start(2), offset + mm.end(2)):
                 return float(mm.group(2).replace(",", "")), "USD"
         for mm in re.finditer(_AMOUNT, segment):
-            if _plausible_amount(mm.group(1)) and not _is_date_fragment(
+            # A bare number is only plausible money when properly
+            # thousands-grouped ("5,000,000"); otherwise it could be an
+            # IBAN, phone or building number.
+            if _is_grouped_amount(mm.group(1)) and not _is_date_fragment(
                     text, offset + mm.start(), offset + mm.end()):
                 return float(mm.group(1).replace(",", "")), None
     return None, None
