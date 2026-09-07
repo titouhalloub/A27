@@ -29,6 +29,57 @@ from app.models.enums import DocumentType
 from app.telemetry import get_tracer
 
 # --- Keyword lexicons for the deterministic fallback ----------------------
+
+# Filename abbreviation map: marketing/abbreviated filenames (e.g. vendor
+# portals, emailed attachments) use truncated tokens that the keyword
+# matcher would otherwise miss. Expanded before matching.
+def _expand_filename(fname: str) -> str:
+    """Replace known abbreviations in a filename with their full forms so the
+    keyword matcher can scoring them. Unknown tokens are left alone.
+    
+    Non-recursive: each token is replaced at most once to avoid
+    "subscriptioniption" style blowups."""
+    parts = re.split(r"[^a-z]+", fname.lower())
+    expanded = []
+    for p in parts:
+        if p in _FILENAME_ABBREVS:
+            expanded.append(_FILENAME_ABBREVS[p])
+        elif p:
+            expanded.append(p)
+    return " ".join(expanded)
+_FILENAME_ABBREVS: dict[str, str] = {
+    "subagmt": "subscription agreement",
+    "sub": "subscription",
+    "agmt": "agreement",
+    "loan": "loan",
+    "sukuk": "sukuk",
+    "suks": "sukuk",
+    "capcall": "capital call",
+    "cap": "capital",
+    "sha": "shareholder agreement",
+    "ppm": "private placement memorandum",
+    "lpa": "limited partnership agreement",
+    "fatwa": "fatwa",
+    "kyc": "kyc",
+    "sideletter": "side letter",
+    "safe": "safe",
+    "fs": "financial statement",
+}
+
+
+def _expand_filename(fname: str) -> str:
+    """Replace known abbreviations in a filename with their full forms so the
+    keyword matcher can score them. Unknown tokens are left alone."""
+    parts = re.split(r"[^a-z]+", fname.lower())
+    expanded = []
+    for p in parts:
+        if p in _FILENAME_ABBREVS:
+            expanded.append(_FILENAME_ABBREVS[p])
+        elif p:
+            expanded.append(p)
+    return " ".join(expanded)
+
+
 LOAN_KEYWORDS: set[str] = {
     "loan agreement",
     "borrower",
@@ -79,6 +130,7 @@ CAPITAL_CALL_KEYWORDS: set[str] = {
 }
 
 SUBSCRIPTION_KEYWORDS: set[str] = {
+    "subscription",
     "subscription agreement",
     "subscription form",
     "subscription price",
@@ -113,6 +165,35 @@ SUBSCRIPTION_KEYWORDS: set[str] = {
     "limited partnership agreement",
     "partner capital",
     "drawdown",
+}
+
+EQUITY_SUBSCRIPTION_KEYWORDS: set[str] = {
+    "company name",
+    "state of incorporation",
+    "security type",
+    "price per unit",
+    "total offering amount",
+    "minimum investment",
+    "limited liability company",
+    "llc",
+    "articles of organization",
+    "operating agreement",
+    "subscription agreement",
+    "non-voting",
+    "common units",
+    "preferred units",
+    "membership interests",
+    "offering amount",
+    "target offering amount",
+    "regulation crowdfunding",
+    "form c",
+    "mainvest",
+    "investment amount",
+    "minimum subscription",
+    "per unit",
+    "units",
+    "company",
+    "incorporation",
 }
 # Document types that classification can *never* produce — these are only
 # ever assigned by the ingestion layer or human triage.
@@ -168,6 +249,26 @@ def _keyword_score(text_normalised: str, keywords: set[str]) -> int:
     return sum(1 for kw in keywords if kw in text_normalised)
 
 
+# Filename abbreviation map. Uploaders compress long words
+# ("emktbrew_subagmtca2.pdf" = "emktbrew subscription agreement 2"), so the
+# raw keyword won't match. These map abbreviation substrings to the keyword
+# they stand for — applied only to the filename, never the body text.
+_FILENAME_ABBREVS: dict[str, set[str]] = {
+    "subscription": {"subagmt", "subscr", "subagree"},
+    "loan": {"ln", "loa"},
+    "sukuk": {"suk"},
+}
+
+# Filename abbreviation map. Uploaders compress long words
+# ("emktbrew_subagmtca2.pdf" = "emktbrew subscription agreement 2"), so the
+# raw keyword won't match. These map abbreviation substrings to the keyword
+# they stand for — applied only to the filename, never the body text.
+_FILENAME_ABBREVS: dict[str, set[str]] = {
+    "subscription": {"subagmt", "subscr", "subagree"},
+    "loan": {"ln", "loa"},
+    "sukuk": {"suk"},
+}
+
 def classify_with_heuristics(text: str, filename: str = "") -> ClassificationResult:
     """Deterministic keyword classifier.
 
@@ -204,16 +305,24 @@ def classify_with_heuristics(text: str, filename: str = "") -> ClassificationRes
     sukuk_hits = _keyword_score(t, SUKUK_KEYWORDS)
     cc_hits = _keyword_score(t, CAPITAL_CALL_KEYWORDS)
     sub_hits = _keyword_score(t, SUBSCRIPTION_KEYWORDS)
+    equity_hits = _keyword_score(t, EQUITY_SUBSCRIPTION_KEYWORDS)
 
     # Filename keyword matches — these are deliberate uploader signals
     # ("Subscription-Agreement-...pdf") that should break ties in the
     # ranking and boost confidence on the winner. Incidental words like
     # "sukuk" in the fund name ("Elzaad Sukuk Fund V8") are text hits,
     # not filename hits, so they don't benefit from this bonus.
-    fname_loan = _keyword_score(fname, LOAN_KEYWORDS)
-    fname_sukuk = _keyword_score(fname, SUKUK_KEYWORDS)
-    fname_cc = _keyword_score(fname, CAPITAL_CALL_KEYWORDS)
-    fname_sub = _keyword_score(fname, SUBSCRIPTION_KEYWORDS)
+    # Expand filename abbreviations before scoring so compressed names
+    # like 'emktbrew_subagmtca2.pdf' still match 'subscription'.
+    expanded = fname
+    for full, abbrevs in _FILENAME_ABBREVS.items():
+        for abbr in abbrevs:
+            expanded = expanded.replace(abbr, full)
+    fname_loan = _keyword_score(expanded, LOAN_KEYWORDS)
+    fname_sukuk = _keyword_score(expanded, SUKUK_KEYWORDS)
+    fname_cc = _keyword_score(expanded, CAPITAL_CALL_KEYWORDS)
+    fname_sub = _keyword_score(expanded, SUBSCRIPTION_KEYWORDS)
+    fname_equity = _keyword_score(expanded, EQUITY_SUBSCRIPTION_KEYWORDS)
 
     # Filename keyword matches boost ALL matching classes equally, then
     # we pick the winner.  The filename is a deliberate uploader signal
@@ -223,6 +332,7 @@ def classify_with_heuristics(text: str, filename: str = "") -> ClassificationRes
     sukuk_hits += 2 * fname_sukuk
     cc_hits += 2 * fname_cc
     sub_hits += 2 * fname_sub
+    equity_hits += 2 * fname_equity
 
     # Build a list of (hits, doc_type) sorted descending by hits
     candidates = [
@@ -230,6 +340,7 @@ def classify_with_heuristics(text: str, filename: str = "") -> ClassificationRes
         (sukuk_hits, DocumentType.SUKUK_CERTIFICATE),
         (cc_hits, DocumentType.CAPITAL_CALL_NOTICE),
         (sub_hits, DocumentType.SUBSCRIPTION_AGREEMENT),
+        (equity_hits, DocumentType.EQUITY_SUBSCRIPTION),
     ]
     candidates.sort(key=lambda x: x[0], reverse=True)
 
@@ -246,6 +357,7 @@ def classify_with_heuristics(text: str, filename: str = "") -> ClassificationRes
             DocumentType.SUKUK_CERTIFICATE: fname.find("sukuk") if fname_sukuk else 999,
             DocumentType.CAPITAL_CALL_NOTICE: fname.find("capital") if fname_cc else 999,
             DocumentType.SUBSCRIPTION_AGREEMENT: fname.find("subscription") if fname_sub else 999,
+            DocumentType.EQUITY_SUBSCRIPTION: fname.find("subscription") if fname_equity else 999,
         }
         # Filter to classes that are tied at best_hits
         hits_map = {
@@ -253,6 +365,7 @@ def classify_with_heuristics(text: str, filename: str = "") -> ClassificationRes
             DocumentType.SUKUK_CERTIFICATE: sukuk_hits,
             DocumentType.CAPITAL_CALL_NOTICE: cc_hits,
             DocumentType.SUBSCRIPTION_AGREEMENT: sub_hits,
+            DocumentType.EQUITY_SUBSCRIPTION: equity_hits,
         }
         tied = [c for c in hits_map if hits_map[c] == best_hits]
         # Pick the tied class with the earliest filename keyword position
@@ -286,6 +399,7 @@ def classify_with_heuristics(text: str, filename: str = "") -> ClassificationRes
         DocumentType.SUKUK_CERTIFICATE: fname_sukuk,
         DocumentType.CAPITAL_CALL_NOTICE: fname_cc,
         DocumentType.SUBSCRIPTION_AGREEMENT: fname_sub,
+        DocumentType.EQUITY_SUBSCRIPTION: fname_sub,
     }[best_type]
 
     if fname_bonus > 0:

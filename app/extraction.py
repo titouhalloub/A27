@@ -13,12 +13,11 @@ from app.telemetry import get_tracer
 
 from app.schemas import (
     SCHEMA_VERSION,
-    EXTRACTION_ROUTE_NAMES,
     LoanExtraction,
     SukukExtraction,
     CapitalCallExtraction,
     SubscriptionAgreementExtraction,
-    extract_result_to_document_data,
+    EquitySubscriptionExtraction,
 )
 
 _CURRENCY = r"\b(?:USD|EUR|GBP|MYR|AED|SAR|SGD|IDR|TRY)\b"
@@ -145,8 +144,11 @@ def _money_after(text: str, keyword_pattern: str, window: int = 80):
                     text, offset + mm.start(1), offset + mm.end(1)):
                 return float(mm.group(1).replace(",", "")), mm.group(2).upper()[:3]
         for mm in _DOLLAR_AMOUNT.finditer(segment):
-            if _plausible_amount(mm.group(2)) and not _is_date_fragment(
-                    text, offset + mm.start(2), offset + mm.end(2)):
+            # $_AMOUNT is money by definition — the '$' token IS the
+            # plausibility proof, so _plausible_amount doesn't apply.
+            # '$1.00' and '$500' are legitimate prices/offerings even
+            # though their integer part has < 4 digits.
+            if not _is_date_fragment(text, offset + mm.start(2), offset + mm.end(2)):
                 return float(mm.group(2).replace(",", "")), "USD"
         for mm in re.finditer(_AMOUNT, segment):
             # A bare number is only plausible money when properly
@@ -167,7 +169,8 @@ def _money_anywhere(text: str):
         if _plausible_amount(m.group(2)) and not _is_date_fragment(text, m.start(2), m.end(2)):
             return float(m.group(2).replace(",", "")), m.group(1).upper()[:3]
     for m in _DOLLAR_AMOUNT.finditer(text):
-        if _plausible_amount(m.group(2)) and not _is_date_fragment(text, m.start(2), m.end(2)):
+        # $_AMOUNT is money by definition — skip _plausible_amount.
+        if not _is_date_fragment(text, m.start(2), m.end(2)):
             return float(m.group(2).replace(",", "")), "USD"
     # Amount followed by the currency spelled out in prose, e.g.
     # "pay the sum of 7,500,000 in United States Dollars".
@@ -338,6 +341,65 @@ def extract_capital_call(text: str) -> tuple[CapitalCallExtraction | None, float
     return extraction, confidence
 
 
+def extract_equity_subscription(text):
+    """US LLC / Corp equity subscription agreement."""
+    company_name = _clean_name(_grep(
+        r'(?:company|issuer|corporation|llc|inc)\s*name[\s:]+([^\n,]{2,80})',
+        text))
+    if not company_name:
+        company_name = _clean_name(_grep(
+            r'((?:\d\s+)?[A-Z][^\n,]{2,60}(?:LLC|Inc\.?|Corporation|Corp\.?|Company|LP|LLP))',
+            text))
+    if not company_name:
+        company_name = _clean_name(_grep(
+            r'(\d[\w\s,]{2,60}(?:LLC|Inc\.?|Corporation|Corp\.?|Company|LP|LLP))',
+            text))
+    state = _grep(
+        r'(?:state|jurisdiction)\s*(?:of\s*)?(?:incorporation|organization)'
+        r'[\s:]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)', text)
+    if not state:
+        state = _grep(
+            r'(?:a|an)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+limited\s+liability\s+company',
+            text)
+    security = _clean_name(_grep(
+        r'(?:security|unit|share)\s*type[\s:]+([^\n,]{2,80})', text))
+    if not security:
+        m = re.search(
+            r'(?:(\d[\d,]*(?:\.\d+)?)\s*)?((?:Non-Voting\s+|Voting\s+)?(?:Common|Preferred)\s+(?:Units|Shares|Interests))',
+            text, re.IGNORECASE)
+        if m:
+            security = _clean_name(m.group(2).replace("\n", " ").strip())
+    if not security:
+        security = _clean_name(_grep(
+            r'(\d[\d,]+(?:\.\d+)?\s+[A-Za-z][^\n,]{2,60}?(?:Units|Shares|Interests))',
+            text))
+    price, _ = _money_after(text, r'(?:price\s*per|per\s*unit)', window=60)
+    total, cur = _money_after(
+        text, r'(?:total\s*(?:offering|issue|amount)|offering\s*amount|up\s*to|aggregate\s*of)',
+        window=80)
+    if total is None:
+        total, cur = _money_after(text, r'(?:offering|issue|sell)', window=100)
+    minimum, _ = _money_after(
+        text, r'(?:minimum\s*(?:investment|subscription)|minimum\s*amount|less\s*than)',
+        window=80)
+    currency = (cur or _currency_of(text) or 'USD').upper()[:3]
+    fields = [company_name, state, security, price, total, minimum]
+    found = sum(1 for f in fields if f is not None)
+    conf = found / len(fields) if fields else 0.0
+    if found == 0:
+        return None, 0.0
+    return EquitySubscriptionExtraction(
+        company_name=company_name,
+        state_of_incorporation=state,
+        security_type=security,
+        price_per_unit=price,
+        total_offering_amount=total,
+        minimum_investment=minimum,
+        currency=currency,
+        source_text=text[:2000],
+    ), min(conf, 1.0)
+
+
 def extract_subscription(text: str) -> tuple[SubscriptionAgreementExtraction | None, float]:
     """Extract subscription agreement information.
 
@@ -357,6 +419,17 @@ def extract_subscription(text: str) -> tuple[SubscriptionAgreementExtraction | N
         # "Elzaad Sukuk Fund (The Fund)" — no "Fund Name:" label anywhere.
         fund_name = _clean_name(_grep(
             r"([^\n]{2,80}?)\s*\(\s*(?:the\s+)?fund\s*\)", text))
+    if not fund_name:
+        # US LLC equity subscriptions: "5 Mile Brewing Company LLC"
+        fund_name = _clean_name(_grep(
+            r"([A-Z][^\n,]{2,80}?\b(?:LLC|Inc|Ltd|Corp|Company)\b[^\n,]{0,20})",
+            text))
+    if not fund_name:
+        # US LLC equity subscriptions: "5 Mile Brewing Company LLC, a
+        # Michigan limited liability company (the \"Company\")"
+        fund_name = _clean_name(_grep(
+            r"([A-Z][^\n,]{2,80}?\b(?:LLC|Inc|Ltd|Corp|Company)\b[^\n,]{0,20})",
+            text))
 
     investor_name = _clean_name(_grep(
         r"(?:investor|subscriber|limited partner|lp)\s*name[\s:]+([^\n,]{2,80})",
@@ -424,6 +497,7 @@ EXTRACTORS: dict[str, Callable[[str], tuple[BaseModel | None, float]]] = {
     "sukuk_certificate": extract_sukuk,
     "capital_call_notice": extract_capital_call,
     "subscription_agreement": extract_subscription,
+    "equity_subscription": extract_equity_subscription,
 }
 
 

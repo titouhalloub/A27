@@ -43,6 +43,7 @@ class DocumentType(str, Enum):
     SIDE_LETTER = "side_letter"
     SAFE = "safe"
     SUBSCRIPTION_AGREEMENT = "subscription_agreement"
+    EQUITY_SUBSCRIPTION = "equity_subscription"
     CAPITAL_CALL_NOTICE = "capital_call_notice"
     UNCLASSIFIED = "unclassified"
     OTHER = "other"

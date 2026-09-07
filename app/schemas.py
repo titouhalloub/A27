@@ -138,69 +138,22 @@ class SubscriptionAgreementExtraction(BaseModel):
     investor_type: Literal["individual", "institutional", "family_office", "other"] = "other"
     source_text: str = Field(description="Parsed text window used for extraction")
 
-
-# ---------------------------------------------------------------------------
-# Routing table: document type -> extraction schema
-# ---------------------------------------------------------------------------
-
-SCHEMA_BY_DOCUMENT_TYPE: dict[DocumentType, Type[BaseModel] | None] = {
-    DocumentType.LOAN_AGREEMENT: LoanExtraction,
-    DocumentType.TERM_SHEET: LoanExtraction,
-    DocumentType.SUKUK_CERTIFICATE: SukukExtraction,
-    DocumentType.FATWA: None,  # evidence document: attached, not extracted
-    DocumentType.SHA: EquityExtraction,
-    DocumentType.PPM: EquityExtraction,
-    DocumentType.LPA: FundInterestExtraction,
-    DocumentType.SIDE_LETTER: EquityExtraction,
-    DocumentType.SAFE: EquityExtraction,
-    DocumentType.FINANCIAL_STATEMENT: RealAssetExtraction,
-    DocumentType.KYC: None,  # encrypted PII, never auto-extracted
-    DocumentType.OTHER: None,
-    DocumentType.UNCLASSIFIED: None,  # human triage, never auto-extracted
-    DocumentType.CAPITAL_CALL_NOTICE: CapitalCallExtraction,
-    DocumentType.SUBSCRIPTION_AGREEMENT: SubscriptionAgreementExtraction,
-}
-
-EXTRACTION_ROUTE_NAMES: dict[DocumentType, str] = {
-    DocumentType.LOAN_AGREEMENT: "LoanExtraction",
-    DocumentType.TERM_SHEET: "LoanExtraction",
-    DocumentType.SUKUK_CERTIFICATE: "SukukExtraction",
-    DocumentType.FATWA: "SukukExtraction",
-    DocumentType.SHA: "EquityExtraction",
-    DocumentType.PPM: "EquityExtraction",
-    DocumentType.LPA: "FundInterestExtraction",
-    DocumentType.SIDE_LETTER: "EquityExtraction",
-    DocumentType.SAFE: "EquityExtraction",
-    DocumentType.FINANCIAL_STATEMENT: "RealAssetExtraction",
-    DocumentType.SUBSCRIPTION_AGREEMENT: "SubscriptionAgreementExtraction",
-    DocumentType.CAPITAL_CALL_NOTICE: "CapitalCallExtraction",
-}
+    source_text: str = Field(description="Parsed text window used for extraction")
 
 
-def extraction_schema_for(document_type: DocumentType) -> Type[BaseModel] | None:
-    """Return the Pydantic schema routed to by a document type, or None."""
-    return SCHEMA_BY_DOCUMENT_TYPE.get(document_type)
+class EquitySubscriptionExtraction(BaseModel):
+    """US LLC / Corp equity subscription agreement."""
 
+    schema_name: Literal["EquitySubscriptionExtraction"] = (
+        "EquitySubscriptionExtraction")
+    schema_version: Literal["v1"] = "v1"
+    extracted_at: datetime = Field(default_factory=datetime.utcnow)
+    company_name: str | None = None
+    state_of_incorporation: str | None = None
+    security_type: str | None = None
+    price_per_unit: float | None = None
+    total_offering_amount: float | None = None
+    minimum_investment: float | None = None
+    currency: str | None = None
+    source_text: str | None = None
 
-def extract_result_to_document_data(
-    extraction: BaseModel,
-    schema_name: str,
-    schema_version: str = SCHEMA_VERSION,
-) -> dict[str, Any]:
-    """Explicit, tested mapping from a typed extraction into the JSON field.
-
-    Spec gap #2 fix: the transformation is never implicit. The Pydantic
-    object is dumped, and the schema name + version are stored alongside the
-    payload so old documents are never ambiguous to read back when schemas
-    evolve.
-    """
-    if not isinstance(extraction, BaseModel):
-        raise TypeError(
-            f"extraction must be a Pydantic model, got {type(extraction).__name__}"
-        )
-    return {
-        "schema_name": schema_name,
-        "schema_version": schema_version,
-        "extracted_at": datetime.now(timezone.utc).isoformat(),
-        "data": extraction.model_dump(),
-    }
