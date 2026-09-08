@@ -436,6 +436,39 @@ def _extract_company_name(text: str) -> str | None:
     return None
 
 
+def _extract_subscriber_name(text: str) -> str | None:
+    """The subscribing investor — the *buyer* in an equity subscription.
+
+    Deliberately stricter than the issuer heuristics: a proposed CapTableEvent
+    holder must be the entity the document itself names as the subscriber,
+    not a guess from signature blocks or representative titles. Only the
+    explicit preamble convention counts:
+
+        "Jane Q. Investor (the \\"Subscriber\\") hereby subscribes..."
+        "... (the \\"Purchaser\\") hereby subscribes for ..."
+    """
+    cands: list[str | None] = [
+        # "X (the "Subscriber" / "Purchaser")" followed by subscribe-verb.
+        _grep(
+            r'([A-Z][A-Za-z0-9 .,&"\'-]{2,90}?)\s*'
+            r'\(\s*the\s*["“”\']?(?:Subscriber|Purchaser)["“”\']?\s*\)\s*'
+            r"(?:hereby\s+)?subscribes?\b",
+            text,
+        ),
+        # Same preamble, verb anywhere later in the sentence (OCR line breaks).
+        _grep(
+            r'([A-Z][A-Za-z0-9 .,&"\'-]{2,90}?)\s*'
+            r'\(\s*the\s*["“”\']?(?:Subscriber|Purchaser)["“”\']?\s*\)',
+            text,
+        ),
+    ]
+    for cand in cands:
+        cleaned = _clean_name(cand)
+        if cleaned:
+            return cleaned
+    return None
+
+
 def _extract_state_of_incorporation(text: str) -> str | None:
     """Name the incorporation/formation state without confusing it with the
     governing-law state ('governed by the laws of the State of Delaware' is
@@ -592,6 +625,7 @@ def extract_equity_subscription(text: str) -> tuple[EquitySubscriptionExtraction
                           or _DOLLAR_AMOUNT.search(text))
     category = _extract_accredited_category(text)
     doc_date = _parse_doc_date(text)
+    subscriber = _extract_subscriber_name(text)
 
     if not any((company_name, state, security, share_count, price,
                 total, minimum, investment)):
@@ -622,6 +656,7 @@ def extract_equity_subscription(text: str) -> tuple[EquitySubscriptionExtraction
         investment_amount=investment,
         accredited_investor_category=category,
         document_date=doc_date,
+        subscriber_name=subscriber,
         source_text=text[:2000],
     ), conf
 def extract_subscription(text: str) -> tuple[SubscriptionAgreementExtraction | None, float]:

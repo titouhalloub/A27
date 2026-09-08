@@ -26,6 +26,7 @@ from app.api_schemas import (
     CapTableEventCreate,
     CapTableEventOut,
     CapTableOut,
+    CapTableProposalOut,
     DocumentOut,
     DocumentSubmit,
     ErrorOut,
@@ -51,15 +52,20 @@ from app.compliance import ComplianceGateway
 from app.config import settings
 from app.db import get_session, init_db
 from app.models.enums import (
+    CapTableEventType,
     ComplianceMode,
     DocumentStatus,
     IngestionSource,
     InvestorType,
     LedgerEntryType,
+    ProposalStatus,
+    ProposalType,
+    SecurityType,
     ShariahReviewStatus,
 )
 from app.models.orm import (
     CapTableEvent,
+    CapTableProposal,
     Document,
     Holding,
     Instrument,
@@ -67,9 +73,11 @@ from app.models.orm import (
     LedgerEntry,
     Security as SecurityModel,
 )
+from app.models.orm import _utcnow
 from app.pipeline import process_document
 from app.ocr import TextExtractionError, UnsupportedFileType, UploadTooLarge, text_from_upload
 from app.review import ShariahReviewError, submit_human_review_instrument
+from app.schemas import EquitySubscriptionExtraction
 
 
 @asynccontextmanager
@@ -665,3 +673,272 @@ def get_cap_table(
         ownership_by_holder=ownership,
         positions=positions_out,
     )
+
+
+# ---------------------------------------------------------------------------
+# Document -> cap table proposal flow
+#
+# The pipeline classifies, extracts, and writes the deal container, but the
+# cap table is a *ledger of ownership facts*, and per the no-guessing
+# guarantee the system never writes those on its own authority. What it CAN
+# do on its own is prepare the exact write for a human: a proposed issuance
+# with every number filled from an extraction that already cleared the
+# confidence gates, never invented. Approval is one endpoint, one click --
+# and the reviewer sees the real numbers, not a blank form to re-type.
+#
+# Investor auto-provisioning follows the same rule: when the *document itself*
+# names the subscriber in its own preamble convention ("X (the 'Subscriber')
+# hereby subscribes..."), creating a PROVISIONAL investor with that exact
+# name is transcription, not a guess. Signature-block-only names are never
+# auto-provisioned -- they stay None and the proposal carries a
+# subscriber_unresolved flag for the reviewer.
+# ---------------------------------------------------------------------------
+
+
+def _provisional_investor(
+    session: Session, name: str
+) -> tuple[Investor, bool]:
+    """Return the investor with exactly this name, creating a PROVISIONAL
+    one when absent. The bool is True only for a freshly created row, so the
+    audit trail distinguishes transcription from reuse."""
+    existing = session.execute(
+        select(Investor).where(Investor.name == name)
+    ).scalars().first()
+    if existing is not None:
+        return existing, False
+    investor = Investor(
+        id=str(uuid4()),
+        name=name,
+        investor_type=InvestorType.INDIVIDUAL,
+    )
+    session.add(investor)
+    session.flush()  # id available for the event payload below
+    return investor, True
+
+
+def _provisional_security(
+    session: Session, issuer_name: str, security_type: str | None,
+    share_count: float | None,
+) -> tuple[SecurityModel, bool]:
+    """Return the issuer's security class, creating a placeholder when absent.
+
+    A class with the same name may already exist; otherwise the extraction's
+    security_type text ('Series A Preferred stock') becomes the class name.
+    authorized_shares is set from the document's stated share count ONLY --
+    never padded with a guessed round number."""
+    name = (security_type or "common").strip() or "common"
+    existing = session.execute(
+        select(SecurityModel).where(
+            SecurityModel.issuer_name == issuer_name,
+            SecurityModel.name == name,
+        )
+    ).scalars().first()
+    if existing is not None:
+        return existing, False
+    security = SecurityModel(
+        id=str(uuid4()),
+        issuer_name=issuer_name,
+        name=name,
+        security_type=SecurityType.PREFERRED
+        if "preferred" in name.lower() else SecurityType.COMMON,
+        authorized_shares=share_count,
+    )
+    session.add(security)
+    session.flush()
+    return security, True
+
+
+@app.post(
+    "/documents/{document_id}/cap-table-proposal",
+    response_model=CapTableProposalOut,
+    status_code=201,
+    responses={
+        401: {"model": ErrorOut},
+        404: {"model": ErrorOut},
+        409: {"model": ErrorOut},
+    },
+)
+def create_cap_table_proposal(
+    document_id: str,
+    session: Session = Depends(get_session),
+    _: str = Depends(require_api_key),
+) -> CapTableProposal:
+    """Prepare a cap-table issuance proposal from a processed document.
+
+    The document must have passed both confidence gates (classification >=
+    0.75, extraction >= 0.85) -- a reviewed/unprocessed document carries
+    numbers nobody validated, so it can never seed a proposal. The proposal
+    itself is inert: no Security, Investor, or CapTableEvent rows exist until
+    a human approves (see the approval endpoint below)."""
+    doc = session.get(Document, document_id)
+    if doc is None:
+        raise HTTPException(
+            status_code=404, detail=f"Document {document_id!r} not found"
+        )
+    if doc.status != DocumentStatus.PROCESSED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Document {document_id!r} is {doc.status.value}, not "
+            "processed -- only a document that cleared both confidence "
+            "gates can seed a cap-table proposal",
+        )
+
+    data = (doc.extracted_data or {}).get("data", {})
+    parsed = EquitySubscriptionExtraction.model_validate(data)
+    if not parsed.company_name or parsed.share_count is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Extraction lacks the fields a cap-table event requires "
+            "(company_name / share_count) -- route to human review instead",
+        )
+
+    investor_id: str | None = None
+    provisional_investor_created = False
+    if parsed.subscriber_name:
+        investor, provisional_investor_created = _provisional_investor(
+            session, parsed.subscriber_name
+        )
+        investor_id = investor.id
+
+    payload = {
+        "document_id": doc.id,
+        "instrument_id": doc.instrument_id,
+        "issuer_name": parsed.company_name,
+        "security_name": parsed.security_type,
+        "holder_id": investor_id,
+        "holder_name": parsed.subscriber_name,
+        "share_count": parsed.share_count,
+        "price_per_share": parsed.subscription_price_per_share
+        or parsed.price_per_unit,
+        "amount": parsed.investment_amount or parsed.total_offering_amount,
+        "currency": parsed.currency,
+        "document_date": (
+            parsed.document_date.isoformat() if parsed.document_date else None
+        ),
+        "subscriber_unresolved": investor_id is None,
+        "provisional_investor_created": provisional_investor_created,
+    }
+    proposal = CapTableProposal(
+        id=str(uuid4()),
+        document_id=doc.id,
+        instrument_id=doc.instrument_id,
+        proposal_type=ProposalType.CAP_TABLE_PROPOSAL,
+        status=ProposalStatus.PROPOSED,
+        payload=payload,
+    )
+    session.add(proposal)
+    try:
+        session.commit()
+    except Exception as exc:  # noqa: BLE001 -- surfaced as a real 409, not a 500
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    session.refresh(proposal)
+    return proposal
+
+
+@app.post(
+    "/cap-table-proposals/{proposal_id}/approve",
+    response_model=CapTableEventOut,
+    responses={
+        401: {"model": ErrorOut},
+        404: {"model": ErrorOut},
+        409: {"model": ErrorOut},
+    },
+)
+def approve_cap_table_proposal(
+    proposal_id: str,
+    reviewer: str,
+    session: Session = Depends(get_session),
+    _: str = Depends(require_api_key),
+) -> CapTableEvent:
+    """The human gate. Materializes the proposed issuance as a real
+    CapTableEvent -- the ONLY path from an extracted document into the
+    cap table, matching how CapitalCall approval already works."""
+    proposal = session.get(CapTableProposal, proposal_id)
+    if proposal is None:
+        raise HTTPException(
+            status_code=404, detail=f"Proposal {proposal_id!r} not found"
+        )
+    if proposal.status != ProposalStatus.PROPOSED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Proposal {proposal_id!r} is {proposal.status.value}, "
+            "not proposed -- a proposal is approved at most once",
+        )
+    if not reviewer or not reviewer.strip():
+        raise HTTPException(status_code=409, detail="A named reviewer is required")
+    payload = proposal.payload or {}
+    if payload.get("subscriber_unresolved"):
+        raise HTTPException(
+            status_code=409,
+            detail="The extraction never identified the subscriber -- "
+            "link a real investor (or edit the proposal) before approving",
+        )
+
+    issuer_name = payload.get("issuer_name") or ""
+    holder_id = payload.get("holder_id") or ""
+    holder = session.get(Investor, holder_id)
+    if holder is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Investor {holder_id!r} no longer exists -- create it "
+            "and resubmit the proposal",
+        )
+
+    security, security_created = _provisional_security(
+        session, issuer_name, payload.get("security_name"),
+        payload.get("share_count"),
+    )
+    # document_date is stored in the payload as an ISO string; the event
+    # column is a real DateTime, so parse it back (never store a string in a
+    # datetime column -- SQLite would fail to coerce it on later reads).
+    raw_date = payload.get("document_date")
+    effective = datetime.fromisoformat(raw_date) if raw_date else _utcnow()
+    event = CapTableEvent(
+        id=str(uuid4()),
+        security_id=security.id,
+        event_type=CapTableEventType.ISSUANCE,
+        holder_id=holder.id,
+        quantity=payload.get("share_count"),
+        price_per_share=payload.get("price_per_share"),
+        effective_date=effective,
+        notes=f"From document {proposal.document_id}, approved by {reviewer.strip()}",
+    )
+    session.add(event)
+    proposal.status = ProposalStatus.APPROVED
+    try:
+        session.commit()
+    except Exception as exc:  # noqa: BLE001 -- surfaced as a real 409, not a 500
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    session.refresh(event)
+
+    # Write-time consistency check, exactly like the manual event endpoint:
+    # a proposal can never push the log into an inconsistent state.
+    try:
+        compute_cap_table(session, issuer_name)
+    except CapTableError as exc:
+        session.delete(event)
+        if security_created:
+            session.delete(security)
+        proposal.status = ProposalStatus.PROPOSED
+        session.commit()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    session.add(LedgerEntry(
+        id=str(uuid4()),
+        entry_type=LedgerEntryType.CAP_TABLE_EVENT,
+        instrument_id=proposal.instrument_id,
+        document_id=proposal.document_id,
+        payload={
+            "event": "cap_table_proposal_approved",
+            "proposal_id": proposal.id,
+            "cap_table_event_id": event.id,
+            "security_id": security.id,
+            "holder_id": holder.id,
+            "share_count": payload.get("share_count"),
+            "reviewer": reviewer.strip(),
+        },
+    ))
+    session.commit()
+    return event

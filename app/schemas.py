@@ -170,6 +170,10 @@ class EquitySubscriptionExtraction(BaseModel):
     investment_amount: float | None = None
     accredited_investor_category: str | None = None
     document_date: date | None = None
+    # The subscribing investor (the buyer), as opposed to company_name (the
+    # issuer). "X (the \"Subscriber\") hereby subscribes..." -> X. Never a
+    # guess: a signature-block-only name is not enough for auto-linkage.
+    subscriber_name: str | None = None
     source_text: str | None = None
 
 

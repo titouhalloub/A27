@@ -10,6 +10,8 @@ from app.models.enums import (
     IngestionSource,
     InvestorType,
     LedgerEntryType,
+    ProposalStatus,
+    ProposalType,
     SecurityType,
     ShariahContractType,
     ShariahReviewStatus,
@@ -17,6 +19,7 @@ from app.models.enums import (
 )
 from app.models.orm import (
     CapTableEvent,
+    CapTableProposal,
     CapitalCall,
     Document,
     Holding,
@@ -30,6 +33,7 @@ from app.models.orm import (
 __all__ = [
     "CapTableEvent",
     "CapTableEventType",
+    "CapTableProposal",
     "CapitalCall",
     "CapitalCallStatus",
     "ComplianceMode",
@@ -44,6 +48,8 @@ __all__ = [
     "InvestorType",
     "LedgerEntry",
     "LedgerEntryType",
+    "ProposalStatus",
+    "ProposalType",
     "Security",
     "SecurityType",
     "ShariahContractType",

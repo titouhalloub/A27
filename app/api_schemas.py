@@ -237,6 +237,20 @@ class HolderPositionOut(BaseModel):
     ownership_percent: float
 
 
+class CapTableProposalOut(BaseModel):
+    """A prepared (inert) cap-table issuance from a processed document."""
+
+    id: str
+    document_id: str
+    instrument_id: str | None = None
+    proposal_type: str
+    status: str
+    payload: dict[str, Any]
+    created_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class CapTableOut(BaseModel):
     issuer_name: str
     as_of: datetime

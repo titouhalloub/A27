@@ -120,6 +120,15 @@ class ProposalStatus(str, Enum):
     REJECTED = "rejected"
 
 
+class ProposalType(str, Enum):
+    """Kind of prepared write a ``CapTableProposal`` carries (see
+    ``app.models.orm.CapTableProposal``). v1 ships the equity-issuance
+    proposal; future kinds (transfer, conversion, cancellation) extend this
+    vocabulary without changing the human approval gate."""
+
+    CAP_TABLE_PROPOSAL = "cap_table_proposal"
+
+
 class SecurityType(str, Enum):
     """Classes of equity a company can issue. Kept as vocabulary here; the DB
     column is a validated string (see app.models.orm.Security) so the Alembic

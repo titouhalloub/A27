@@ -46,6 +46,8 @@ from app.models.enums import (
     IngestionSource,
     InvestorType,
     LedgerEntryType,
+    ProposalStatus,
+    ProposalType,
     SecurityType,
     TransactionType,
     ShariahContractType,
@@ -469,5 +471,61 @@ class CapitalCall(Base):
         return (
             f"<CapitalCall instrument={self.instrument_id!r} "
             f"funder={self.funder_id!r} owing={self.capital_owing} "
+            f"status={self.status.value}>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Cap-table proposals -- extraction prepares, a human disposes.
+# ---------------------------------------------------------------------------
+
+
+class CapTableProposal(Base):
+    """A prepared cap-table write, proposed by the pipeline, inert until a
+    named human approves it.
+
+    The extraction pipeline may classify, extract, and backfill the deal
+    container, but ownership facts (CapTableEvent rows) are never written on
+    the system's own authority -- the same principle as CapitalCall: an
+    extracted call sits PENDING_APPROVAL until a human confirms it. This
+    model is the equity-side counterpart: the proposal carries the exact
+    issuance payload read from a document that cleared both confidence
+    gates, and approval materializes it. The payload is a JSON bag so the
+    reviewer sees every number the document actually stated (share count,
+    price, amount, currency, document date) together with provenance flags
+    (subscriber_unresolved, provisional_investor_created) before one
+    approval materializes the Security / issuance event."""
+
+    __tablename__ = "cap_table_proposals"
+    __table_args__ = (
+        Index("ix_cap_table_proposals_document_id", "document_id"),
+        Index("ix_cap_table_proposals_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    document_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("documents.id")
+    )
+    instrument_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("instruments.id"), default=None
+    )
+    proposal_type: Mapped[ProposalType] = mapped_column(
+        Enum(ProposalType, native_enum=False, length=32),
+        default=ProposalType.CAP_TABLE_PROPOSAL,
+    )
+    status: Mapped[ProposalStatus] = mapped_column(
+        Enum(ProposalStatus, native_enum=False, length=16),
+        default=ProposalStatus.PROPOSED,
+    )
+    # The full proposed issuance, exactly as the extraction read it.
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        default=_utcnow, onupdate=_utcnow
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<CapTableProposal doc={self.document_id!r} "
             f"status={self.status.value}>"
         )
