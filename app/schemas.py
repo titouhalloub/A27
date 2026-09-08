@@ -157,3 +157,27 @@ class EquitySubscriptionExtraction(BaseModel):
     currency: str | None = None
     source_text: str | None = None
 
+
+def extract_result_to_document_data(
+    extraction: BaseModel, schema_name: str
+) -> dict[str, Any]:
+    """Serialise a typed extraction result into the ``Document.extracted_data``
+    envelope (spec gap #2): the Pydantic object is ``model_dump()``'d and the
+    schema name + version are stored alongside the payload, so the JSON field
+    is never an implicit, unversioned bag.
+
+    ``mode="json"`` keeps the payload JSON-serialisable for the SQLAlchemy
+    JSON column (datetimes -> ISO strings, str-Enums -> their values, which
+    still compare equal to the enum).
+    """
+    return {
+        "schema_name": schema_name,
+        "schema_version": SCHEMA_VERSION,
+        "data": extraction.model_dump(mode="json"),
+    }
+
+
+# The docstring above historically named this ``extraction_result_to_data()``;
+# keep the alias so both names resolve.
+extraction_result_to_data = extract_result_to_document_data
+

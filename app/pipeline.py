@@ -42,6 +42,8 @@ _DOC_TYPE_TO_TRANSACTION_TYPE: dict[DocumentType, TransactionType] = {
     DocumentType.SUKUK_CERTIFICATE: TransactionType.SUKUK,
     DocumentType.CAPITAL_CALL_NOTICE: TransactionType.FUND_INTEREST,
     DocumentType.SUBSCRIPTION_AGREEMENT: TransactionType.FUND_INTEREST,
+    DocumentType.EQUITY_SUBSCRIPTION: TransactionType.EQUITY,
+    DocumentType.SHA: TransactionType.EQUITY,
 }
 
 
@@ -69,6 +71,7 @@ def _backfill_deal_container(
         "commitment_amount",
         "capital_owing",
         "purchase_price",
+        "total_offering_amount",
     ):
         amount = data.get(key)
         if amount is not None:

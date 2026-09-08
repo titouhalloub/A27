@@ -456,8 +456,15 @@ def _classify_with_openai_compatible(
     system = (
         "You classify private-capital legal documents. Return ONLY valid JSON:\n"
         '{"document_type": "<one of term_sheet|loan_agreement|sha|ppm|lpa|'
-        'sukuk_certificate|capital_call_notice|subscription_agreement|fatwa|financial_statement|kyc|side_letter|safe|other>", '
+        'sukuk_certificate|capital_call_notice|subscription_agreement|equity_subscription|fatwa|financial_statement|kyc|side_letter|safe|other>", '
         '"confidence": <0.0-1.0>}\n'
+        "Disambiguate between the two subscription families:\n"
+        "- subscription_agreement: an investor subscribing into a FUND/vehicle "
+        "(fund name, capital commitment, drawdowns, LP/GP).\n"
+        "- equity_subscription: an investor subscribing for EQUITY/UNITS of an "
+        "operating COMPANY (US LLC/corp): company name, state of incorporation, "
+        "price per unit, total/target offering amount, minimum investment, "
+        "membership interests, non-voting common units, Regulation Crowdfunding, Form C.\n"
         'If you are not confident (below 0.75) return '
         '{"document_type": "unclassified", "confidence": <0.0-1.0>}.\n'
         'Return ONLY the JSON, no explanation.'

@@ -18,7 +18,9 @@ from app.schemas import (
     CapitalCallExtraction,
     SubscriptionAgreementExtraction,
     EquitySubscriptionExtraction,
+    extract_result_to_document_data,
 )
+from app.models.enums import DocumentType
 
 _CURRENCY = r"\b(?:USD|EUR|GBP|MYR|AED|SAR|SGD|IDR|TRY)\b"
 # Optional-currency wrapper for embedding in larger patterns (a bare "?" after
@@ -500,6 +502,14 @@ EXTRACTORS: dict[str, Callable[[str], tuple[BaseModel | None, float]]] = {
     "equity_subscription": extract_equity_subscription,
 }
 
+EXTRACTION_ROUTE_NAMES: dict[DocumentType, str] = {
+    DocumentType.LOAN_AGREEMENT: "LoanExtraction",
+    DocumentType.SUKUK_CERTIFICATE: "SukukExtraction",
+    DocumentType.CAPITAL_CALL_NOTICE: "CapitalCallExtraction",
+    DocumentType.SUBSCRIPTION_AGREEMENT: "SubscriptionAgreementExtraction",
+    DocumentType.EQUITY_SUBSCRIPTION: "EquitySubscriptionExtraction",
+}
+
 
 @dataclass
 class ExtractionOutcome:
@@ -514,7 +524,6 @@ class ExtractionOutcome:
 
 def run_extraction(text: str, document_type: str) -> ExtractionOutcome:
     from app.config import settings
-    from app.models.enums import DocumentType
 
     doc_type = DocumentType(document_type)
     extractor = EXTRACTORS.get(doc_type.value)
