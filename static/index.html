@@ -756,6 +756,11 @@ async function refreshProposals() {
   const list = document.getElementById("proposals-list");
   try {
     const proposals = await apiCall("/cap-table-proposals");
+    // The investor picker needs the real investor registry -- a holder on a
+    // cap-table event must always be an existing Investor row.
+    const investors = proposals.some((p) => p.status === "proposed")
+      ? await apiCall("/investors").catch(() => [])
+      : [];
     proposalsPayloadById = {};
     if (!proposals.length) {
       list.innerHTML = '<span class="cap">No proposals yet. Process an equity/subscription document that clears both confidence gates.</span>';
@@ -765,10 +770,11 @@ async function refreshProposals() {
       const d = p.payload || {};
       proposalsPayloadById[p.id] = d;
       const pending = p.status === "proposed";
+      const unresolved = pending && d.subscriber_unresolved;
       const rows = [
         ["Issuer", d.issuer_name],
         ["Security", d.security_name],
-        ["Holder", d.holder_name || (d.subscriber_unresolved ? "(unresolved)" : null)],
+        ["Holder", d.holder_name || (d.subscriber_unresolved ? "(unresolved -- extraction never identified the subscriber)" : null)],
         ["Shares", d.share_count != null ? Number(d.share_count).toLocaleString() : null],
         ["Price / share", d.price_per_share],
         ["Amount", d.amount != null && d.currency ? Number(d.amount).toLocaleString() + " " + d.currency : null],
@@ -776,9 +782,22 @@ async function refreshProposals() {
         .map(([k, v]) => '<div class="stat-row"><span class="k">' + esc(k) + '</span><span class="v">' + esc(v) + "</span></div>")
         .join("");
       const flags = d.provisional_investor_created ? '<div class="cap" style="margin-top:6px;">Note: holder is a PROVISIONAL investor created by the extraction -- confirm the identity.</div>' : "";
+      // Unresolved subscriber: the reviewer must link a real investor before
+      // approval is possible (the API 409s otherwise). The picker lists the
+      // existing investor registry; approving stays disabled until resolved.
+      const linkControl = unresolved
+        ? '<div style="display:flex; gap:8px; margin-top:10px; align-items:center;">'
+          + '<select data-investor-select="' + esc(p.id) + '" style="flex:1; padding:6px; background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:4px;">'
+          + '<option value="">-- link a real investor --</option>'
+          + investors.map((inv) => '<option value="' + esc(inv.id) + '">' + esc(inv.name) + " (" + esc(inv.investor_type) + ")</option>").join("")
+          + "</select>"
+          + '<button class="btn" data-link="' + esc(p.id) + '">Link investor</button>'
+          + "</div>"
+          + '<div class="cap" style="margin-top:6px;">Extraction never identified the subscriber from the document. Link the real investor before approving -- no guessed holder can enter the cap table.</div>'
+        : "";
       const buttons = pending
         ? '<div style="display:flex; gap:8px; margin-top:10px;">'
-          + '<button class="btn" data-approve="' + esc(p.id) + '">Approve & write to cap table</button>'
+          + '<button class="btn" data-approve="' + esc(p.id) + '"' + (unresolved ? ' disabled title="Link a real investor first -- the subscriber is unresolved."' : "") + ">Approve & write to cap table</button>"
           + '<button class="btn ghost" data-reject="' + esc(p.id) + '">Reject</button>'
           + "</div>"
         : "";
@@ -787,10 +806,24 @@ async function refreshProposals() {
         : '<span style="color:var(--sand);">' + esc(p.status.toUpperCase()) + "</span>";
       return '<div style="border:1px solid var(--line); border-radius:6px; padding:12px; margin-bottom:10px;">'
         + '<div class="cap">' + esc(p.proposal_type) + ' \u00b7 ' + badge + "</div>"
-        + rows + flags + buttons + "</div>";
+        + rows + flags + linkControl + buttons + "</div>";
     }).join("");
     list.querySelectorAll("[data-approve]").forEach((b) => { b.onclick = () => decideProposal(b.dataset.approve, true); });
     list.querySelectorAll("[data-reject]").forEach((b) => { b.onclick = () => decideProposal(b.dataset.reject, false); });
+    list.querySelectorAll("[data-link]").forEach((b) => {
+      b.onclick = async () => {
+        const proposalId = b.dataset.link;
+        const select = list.querySelector('[data-investor-select="' + proposalId + '"]');
+        const investorId = select ? select.value : "";
+        if (!investorId) { showError("Pick an investor from the dropdown first."); return; }
+        const reviewer = (prompt("Your name (recorded as the reviewer on this link):") || "").trim();
+        if (!reviewer) return; // a named reviewer is required, no silent edits
+        try {
+          await apiCall(`/cap-table-proposals/${proposalId}/link-investor?investor_id=${encodeURIComponent(investorId)}&reviewer=${encodeURIComponent(reviewer)}`, { method: "POST" });
+          await refreshProposals();
+        } catch (e) { showError(e.message); }
+      };
+    });
   } catch (e) {
     list.innerHTML = "";
     showError(e.message || "Could not load proposals.");

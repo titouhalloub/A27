@@ -421,6 +421,23 @@ def create_investor(
     return investor
 
 
+@app.get(
+    "/investors",
+    response_model=list[InvestorOut],
+    responses={401: {"model": ErrorOut}},
+)
+def list_investors(
+    session: Session = Depends(get_session),
+    _: str = Depends(require_api_key),
+) -> list[Investor]:
+    """Picker list for the proposal review UI: when a proposal's subscriber
+    is unresolved, the reviewer links one of *these* known investors to it --
+    the holder on a cap-table event must always be a real Investor row."""
+    return list(
+        session.execute(select(Investor).order_by(Investor.name)).scalars().all()
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Cross-fund portfolio -- one investor's holdings across many funds and both
 # compliance tracks, unified in a single response.
@@ -942,6 +959,80 @@ def approve_cap_table_proposal(
     ))
     session.commit()
     return event
+
+
+@app.post(
+    "/cap-table-proposals/{proposal_id}/link-investor",
+    response_model=CapTableProposalOut,
+    responses={
+        401: {"model": ErrorOut},
+        404: {"model": ErrorOut},
+        409: {"model": ErrorOut},
+    },
+)
+def link_investor_to_proposal(
+    proposal_id: str,
+    investor_id: str,
+    reviewer: str = "",
+    session: Session = Depends(get_session),
+    _: str = Depends(require_api_key),
+) -> CapTableProposal:
+    """Resolve an unresolved subscriber: attach a REAL investor to a pending
+    proposal. This is the remedy the approval gate's 409 message promises --
+    extraction can transcribe a subscriber the document names, but when the
+    document only carries a signature block, the human decides *who* this
+    position belongs to, and the cap table only ever issues to an investor
+    row that exists. Only a PROPOSED (undecided) proposal can be edited;
+    the link (and who did it) lands in the audit ledger."""
+    proposal = session.get(CapTableProposal, proposal_id)
+    if proposal is None:
+        raise HTTPException(
+            status_code=404, detail=f"Proposal {proposal_id!r} not found"
+        )
+    if proposal.status != ProposalStatus.PROPOSED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Proposal {proposal_id!r} is {proposal.status.value}, "
+            "not proposed -- it was already decided",
+        )
+    investor = session.get(Investor, investor_id)
+    if investor is None:
+        raise HTTPException(
+            status_code=404, detail=f"Investor {investor_id!r} not found"
+        )
+
+    payload = dict(proposal.payload or {})
+    previous_name = payload.get("holder_name")
+    payload["holder_id"] = investor.id
+    payload["holder_name"] = investor.name
+    payload["subscriber_unresolved"] = False
+    payload["investor_linked"] = {
+        "investor_id": investor.id,
+        "investor_name": investor.name,
+        "previous_holder_name": previous_name,
+        "reviewer": reviewer.strip() or None,
+    }
+    # Reassign the whole dict: in-place mutation of a JSON column is not
+    # detected by SQLAlchemy's change tracking.
+    proposal.payload = payload
+    session.add(LedgerEntry(
+        id=str(uuid4()),
+        entry_type=LedgerEntryType.CAP_TABLE_PROPOSAL,
+        instrument_id=proposal.instrument_id,
+        document_id=proposal.document_id,
+        payload={
+            "event": "cap_table_proposal_investor_linked",
+            "proposal_id": proposal.id,
+            "investor_id": investor.id,
+            "investor_name": investor.name,
+            "previous_holder_name": previous_name,
+            "reviewer": reviewer.strip() or None,
+        },
+    ))
+    session.commit()
+    session.refresh(proposal)
+    return proposal
+
 
 @app.get(
     "/cap-table-proposals",

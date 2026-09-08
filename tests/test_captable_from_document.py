@@ -232,3 +232,78 @@ def test_proposal_approved_at_most_once(client):
         f"/cap-table-proposals/{pid}/approve?reviewer=Dana"
     )
     assert r2.status_code == 409
+
+
+def _unresolved_document(sess, filename: str) -> Document:
+    """A processed document whose extraction found no subscriber
+    (signature-block-only) -- the case the link-investor endpoint exists for."""
+    instrument = _container_instrument(sess, "Demo Issuer")
+    doc = Document(
+        id=str(uuid4()),
+        instrument_id=instrument.id,
+        filename=filename,
+        file_url=f"uploads/{filename}",
+        compliance_mode=ComplianceMode.TRADITIONAL,
+        document_type=DocumentType.EQUITY_SUBSCRIPTION,
+        status=DocumentStatus.PROCESSED,
+        classification_confidence=0.8,
+        extraction_confidence=0.9,
+        extracted_data={
+            "schema_name": "EquitySubscriptionExtraction",
+            "schema_version": "v1",
+            "data": {
+                "schema_name": "EquitySubscriptionExtraction",
+                "schema_version": "v1",
+                "extracted_at": "2015-05-29T00:00:00",
+                "company_name": "ACME CORP.",
+                "security_type": "Common Stock",
+                "currency": "USD",
+                "share_count": 5000,
+                "subscriber_name": None,  # signature block only
+            },
+        },
+    )
+    sess.add(doc)
+    sess.commit()
+    return doc
+
+
+def test_link_investor_resolves_and_approval_succeeds(client):
+    """The remedy for an unresolved subscriber: link a REAL investor, then
+    the same proposal approves and the shares land on that investor in the
+    cap table. The link itself is audited in the ledger."""
+    doc = _unresolved_document(_client_session(), "signature-block-only.pdf")
+    r = client.post(f"/documents/{doc.id}/cap-table-proposal")
+    assert r.status_code == 201, r.text
+    proposal = r.json()
+    assert proposal["payload"]["subscriber_unresolved"] is True
+
+    # The reviewer picks a real investor from the registry...
+    r = client.post("/investors", json={"name": "Real Holder LLC", "investor_type": "institution"})
+    assert r.status_code == 201, r.text
+    investor_id = r.json()["id"]
+
+    # ...links it to the pending proposal...
+    r = client.post(
+        f"/cap-table-proposals/{proposal['id']}/link-investor"
+        f"?investor_id={investor_id}&reviewer=Dana"
+    )
+    assert r.status_code == 200, r.text
+    payload = r.json()["payload"]
+    assert payload["subscriber_unresolved"] is False
+    assert payload["holder_id"] == investor_id
+    assert payload["holder_name"] == "Real Holder LLC"
+    assert payload["investor_linked"]["reviewer"] == "Dana"
+
+    # ...and now the gate opens: approval materializes the issuance.
+    r = client.post(f"/cap-table-proposals/{proposal['id']}/approve?reviewer=Dana")
+    assert r.status_code in (200, 201), r.text
+
+    r = client.get("/cap-table/ACME%20CORP.")
+    assert r.status_code == 200
+    table = r.json()
+    assert table["total_fully_diluted_shares"] == 5000
+    pos = table["positions"][0]
+    assert pos["holder_id"] == investor_id
+    assert pos["holder_name"] == "Real Holder LLC"
+    assert pos["shares"] == 5000
