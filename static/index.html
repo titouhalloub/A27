@@ -131,6 +131,12 @@
         <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--amber);margin-top:10px;cursor:pointer;" id="ct-seed-hint">← Processes will auto-seed a Series A demo</div>
       </div>
       <div class="panel">
+        <h3>Cap Table Proposals</h3>
+        <div class="cap">Issuances read from documents, awaiting your decision</div>
+        <div id="proposals-list" class="field-list"><span class="cap">Connect, then process a document that clears both confidence gates.</span></div>
+        <button class="btn ghost" id="proposals-refresh-btn" style="width:100%; margin-top:10px;">Refresh proposals</button>
+      </div>
+      <div class="panel">
         <h3>Last Result</h3>
         <div class="cap">Most recent document processed</div>
         <div id="last-result"><span class="cap">No document processed yet.</span></div>
@@ -399,6 +405,19 @@ async function runProcessing() {
     timerEl.textContent = `completed in ${total.toFixed(2)}s`;
 
     renderResults(runResult, ledger);
+
+    // If the document cleared both confidence gates, prepare its cap-table
+    // proposal (inert until a human approves it in the proposals panel).
+    // A 409 here is normal -- only equity/subscription documents with
+    // issuer + share count can seed a proposal.
+    if (runResult.document && runResult.document.status === "processed") {
+      try {
+        await apiCall(`/documents/${runResult.document.id}/cap-table-proposal`, {
+          method: "POST",
+        });
+      } catch (_) { /* not proposal-eligible -- nothing to show */ }
+      refreshProposals();
+    }
   } catch (e) {
     clearInterval(iv);
     showError(e.message || "Something went wrong.");
@@ -722,6 +741,85 @@ document.getElementById("ct-view-after").onclick = async () => {
   } catch (e) { showError(e.message); }
 };
 
+
+// --------------------------------------------------------------------- //
+// Cap table proposals -- the human approval gate, in the UI
+// --------------------------------------------------------------------- //
+// A proposal is the inert bridge between an extracted document and the
+// cap table: approving it writes the real CapTableEvent (and the issuer's
+// live cap table is rendered below), rejecting it writes nothing but the
+// audit trail. Both decisions require a named reviewer.
+let proposalsPayloadById = {};
+
+async function refreshProposals() {
+  if (!API_BASE || !API_KEY) return;
+  const list = document.getElementById("proposals-list");
+  try {
+    const proposals = await apiCall("/cap-table-proposals");
+    proposalsPayloadById = {};
+    if (!proposals.length) {
+      list.innerHTML = '<span class="cap">No proposals yet. Process an equity/subscription document that clears both confidence gates.</span>';
+      return;
+    }
+    list.innerHTML = proposals.map((p) => {
+      const d = p.payload || {};
+      proposalsPayloadById[p.id] = d;
+      const pending = p.status === "proposed";
+      const rows = [
+        ["Issuer", d.issuer_name],
+        ["Security", d.security_name],
+        ["Holder", d.holder_name || (d.subscriber_unresolved ? "(unresolved)" : null)],
+        ["Shares", d.share_count != null ? Number(d.share_count).toLocaleString() : null],
+        ["Price / share", d.price_per_share],
+        ["Amount", d.amount != null && d.currency ? Number(d.amount).toLocaleString() + " " + d.currency : null],
+      ].filter(([, v]) => v != null && v !== "")
+        .map(([k, v]) => '<div class="stat-row"><span class="k">' + esc(k) + '</span><span class="v">' + esc(v) + "</span></div>")
+        .join("");
+      const flags = d.provisional_investor_created ? '<div class="cap" style="margin-top:6px;">Note: holder is a PROVISIONAL investor created by the extraction -- confirm the identity.</div>' : "";
+      const buttons = pending
+        ? '<div style="display:flex; gap:8px; margin-top:10px;">'
+          + '<button class="btn" data-approve="' + esc(p.id) + '">Approve & write to cap table</button>'
+          + '<button class="btn ghost" data-reject="' + esc(p.id) + '">Reject</button>'
+          + "</div>"
+        : "";
+      const badge = pending
+        ? '<span style="color:var(--amber);">PENDING DECISION</span>'
+        : '<span style="color:var(--sand);">' + esc(p.status.toUpperCase()) + "</span>";
+      return '<div style="border:1px solid var(--line); border-radius:6px; padding:12px; margin-bottom:10px;">'
+        + '<div class="cap">' + esc(p.proposal_type) + ' \u00b7 ' + badge + "</div>"
+        + rows + flags + buttons + "</div>";
+    }).join("");
+    list.querySelectorAll("[data-approve]").forEach((b) => { b.onclick = () => decideProposal(b.dataset.approve, true); });
+    list.querySelectorAll("[data-reject]").forEach((b) => { b.onclick = () => decideProposal(b.dataset.reject, false); });
+  } catch (e) {
+    list.innerHTML = "";
+    showError(e.message || "Could not load proposals.");
+  }
+}
+
+async function decideProposal(proposalId, approve) {
+  const reviewer = (prompt("Your name (recorded as the reviewer on this decision):") || "").trim();
+  if (!reviewer) return; // a named reviewer is required, no silent decisions
+  try {
+    if (approve) {
+      await apiCall(`/cap-table-proposals/${proposalId}/approve?reviewer=${encodeURIComponent(reviewer)}`, { method: "POST" });
+      // Show the shares landing: render the issuer's live cap table in the
+      // Cap Table panel, exactly what /cap-table/{issuer} replays.
+      const d = proposalsPayloadById[proposalId] || {};
+      if (d.issuer_name) {
+        const data = await apiCall("/cap-table/" + encodeURIComponent(d.issuer_name));
+        renderCapTable(data);
+      }
+    } else {
+      await apiCall(`/cap-table-proposals/${proposalId}/reject?reviewer=${encodeURIComponent(reviewer)}`, { method: "POST" });
+    }
+    await refreshProposals();
+  } catch (e) {
+    showError(e.message || "Could not record the decision.");
+  }
+}
+
+document.getElementById("proposals-refresh-btn").onclick = refreshProposals;
 
 function renderCapTable(data) {
   const colors = ["gold","teal","ember","sand"];

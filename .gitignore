@@ -38,3 +38,4 @@ server_out.txt
 server_err.txt
 server_log.txt
 pytest_*.txt
+server.log

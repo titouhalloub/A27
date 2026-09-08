@@ -21,30 +21,32 @@ def _demo_api_paths() -> set[str]:
     return calls
 
 
-def _normalise(path: str) -> str:
-    """Turn a JS path with template placeholders into a FastAPI route path."""
+def _shape(path: str) -> str:
+    """Collapse every placeholder -- a JS ``${...}`` interpolation or a
+    FastAPI ``{param}`` -- to a bare ``{}``, so a template-literal call
+    compares positionally against the real route no matter what either
+    side names its parameter. Query strings are dropped (they carry no
+    routing information)."""
     path = path.split("?")[0]
-    path = path.replace("${iid}", "{instrument_id}")
-    path = path.replace("${currentInstrumentId}", "{instrument_id}")
-    path = path.replace("${instrument.id}", "{instrument_id}")
-    path = path.replace(
-        "${encodeURIComponent(CT_ISSUER)}", "{issuer_name}"
-    )
+    path = re.sub(r"\$\{[^}]*\}", "{}", path)
+    path = re.sub(r"\{[^}]*\}", "{}", path)
     return path
 
 
 def test_every_demo_endpoint_exists_on_the_api():
-    valid = {r.path for r in app.routes if hasattr(r, "methods")}
+    valid_shapes = {
+        _shape(r.path) for r in app.routes if hasattr(r, "methods")
+    }
     missing = []
     for raw in _demo_api_paths():
         if not raw.startswith("/"):
             continue
-        path = _normalise(raw)
-        if path in valid:
+        path = _shape(raw)
+        if path in valid_shapes:
             continue
         # JS string concatenation fragments ('/cap-table/' + encodeURIComponent(...))
         # are captured as a trailing-slash prefix of the real parametrised route.
-        if path.endswith("/") and any(r.startswith(path) for r in valid):
+        if path.endswith("/") and any(s.startswith(path) for s in valid_shapes):
             continue
         missing.append((raw, path))
     assert not missing, f"demo calls missing API routes: {missing}"

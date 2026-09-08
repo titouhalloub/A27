@@ -942,3 +942,83 @@ def approve_cap_table_proposal(
     ))
     session.commit()
     return event
+
+@app.get(
+    "/cap-table-proposals",
+    response_model=list[CapTableProposalOut],
+    responses={401: {"model": ErrorOut}, 400: {"model": ErrorOut}},
+)
+def list_cap_table_proposals(
+    status: str | None = None,
+    session: Session = Depends(get_session),
+    _: str = Depends(require_api_key),
+) -> list[CapTableProposal]:
+    """Review queue for the human approval gate (newest first).
+
+    ``?status=proposed`` shows only the pending decisions; omit it to see
+    recent approvals/rejections as well. This is what the UI's proposals
+    panel renders -- a proposal only ever becomes shares when a named human
+    approves it, so this queue is the single place to see what awaits."""
+    stmt = select(CapTableProposal)
+    if status:
+        try:
+            status_enum = ProposalStatus(status.strip().lower())
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown status {status!r} "
+                "(use proposed, approved, or rejected)",
+            ) from exc
+        stmt = stmt.where(CapTableProposal.status == status_enum)
+    stmt = stmt.order_by(CapTableProposal.created_at.desc()).limit(100)
+    return list(session.execute(stmt).scalars().all())
+
+
+@app.post(
+    "/cap-table-proposals/{proposal_id}/reject",
+    response_model=CapTableProposalOut,
+    responses={
+        401: {"model": ErrorOut},
+        404: {"model": ErrorOut},
+        409: {"model": ErrorOut},
+    },
+)
+def reject_cap_table_proposal(
+    proposal_id: str,
+    reviewer: str,
+    session: Session = Depends(get_session),
+    _: str = Depends(require_api_key),
+) -> CapTableProposal:
+    """The other half of the human gate. A named reviewer rejects the
+    proposal: nothing is written to the cap table, the proposal is marked
+    REJECTED, and the decision lands in the audit ledger. A rejected
+    proposal can never be approved afterwards -- the path forward is a new
+    proposal from a corrected document."""
+    proposal = session.get(CapTableProposal, proposal_id)
+    if proposal is None:
+        raise HTTPException(
+            status_code=404, detail=f"Proposal {proposal_id!r} not found"
+        )
+    if proposal.status != ProposalStatus.PROPOSED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Proposal {proposal_id!r} is {proposal.status.value}, "
+            "not proposed -- it was already decided",
+        )
+    if not reviewer or not reviewer.strip():
+        raise HTTPException(status_code=409, detail="A named reviewer is required")
+    proposal.status = ProposalStatus.REJECTED
+    session.add(LedgerEntry(
+        id=str(uuid4()),
+        entry_type=LedgerEntryType.CAP_TABLE_PROPOSAL,
+        instrument_id=proposal.instrument_id,
+        document_id=proposal.document_id,
+        payload={
+            "event": "cap_table_proposal_rejected",
+            "proposal_id": proposal.id,
+            "reviewer": reviewer.strip(),
+        },
+    ))
+    session.commit()
+    session.refresh(proposal)
+    return proposal
