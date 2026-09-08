@@ -76,7 +76,11 @@ def test_equity_subscription_extraction_populates_all_fields():
     assert outcome.schema_name == "EquitySubscriptionExtraction"
     assert outcome.extraction is not None
     assert isinstance(outcome.extraction, EquitySubscriptionExtraction)
-    assert outcome.confidence == 1.0
+    # Weighted confidence model: anchors (issuer/offering/security/currency)
+    # weigh 1.0, deal-shapers 0.6, details 0.3. This snippet has no document
+    # date and no explicit subscription price, so 0.871 is its ceiling -- still
+    # above the 0.85 auto-write gate.
+    assert outcome.confidence >= 0.85
     assert not outcome.routed_to_review
 
     data = outcome.extracted_data["data"]
@@ -105,6 +109,54 @@ def test_equity_subscription_envelope_uses_schema_name_and_version():
         "price_per_unit", "total_offering_amount", "minimum_investment", "currency",
     }
     json.dumps(envelope)
+
+
+# Mirrors the real OCR'd Investview 8-K Exhibit 4.1 (SEC-form subscription
+# agreement, May 29, 2015): issuer named in a preamble, offering stated as
+# "authorized for sale 100,000 shares ... maximum offering of $5,000,000",
+# subscriber price as "cash purchase price of $5,000,000", and a BLANK
+# Category A-H accreditation form (no mark -> must stay None, never a guess).
+SEC_FORM_SUB_TEXT = """Investview, Inc. - FORM 8-K - EX-4.1 - May 29, 2015
+Exhibit 4.1
+SUBSCRIPTION AGREEMENT
+INVESTVIEW, INC.
+Investview, Inc. (the "Company") has authorized for sale 100,000 shares (the "Shares")
+of Series A Preferred stock, $0.001 par value ("Preferred Stock") for the maximum
+offering of $5,000,000. The undersigned hereby subscribes for the Shares for the
+cash purchase price of $5,000,000 (the "Subscription Price").
+The Company is a corporation organized under the laws of the State of Nevada.
+Category A___ The undersigned is an individual whose individual net worth exceeds $1,000,000.
+Category B___ The undersigned is a corporation.
+"""
+
+
+def test_sec_form_extraction_captures_all_stated_facts():
+    """The 17-page SEC boilerplate case: issuer must not truncate to
+    'Inc. (the \"Company\"' and the buried share count / offering size /
+    subscription price must all be found."""
+    extraction, confidence = extract_equity_subscription(SEC_FORM_SUB_TEXT)
+    assert extraction is not None
+    assert confidence >= 0.85
+    assert extraction.company_name == "INVESTVIEW, INC."
+    assert extraction.state_of_incorporation == "Nevada"
+    assert extraction.security_type == "Series A Preferred stock"
+    assert extraction.share_count == 100_000
+    assert extraction.total_offering_amount == 5_000_000.0
+    assert extraction.investment_amount == 5_000_000.0
+    # Per-share price is arithmetic on stated facts, never a guess.
+    assert extraction.subscription_price_per_share == 50.0
+    assert extraction.document_date is not None
+    # Blank accreditation form: no mark -> None, never "Category A".
+    assert extraction.accredited_investor_category is None
+
+
+def test_sec_form_extraction_routes_above_gate():
+    outcome = run_extraction(SEC_FORM_SUB_TEXT, "equity_subscription")
+    assert outcome.extraction is not None
+    assert not outcome.routed_to_review
+    assert outcome.extracted_data["data"]["company_name"] == "INVESTVIEW, INC."
+    assert outcome.extracted_data["data"]["share_count"] == 100_000
+    assert outcome.extracted_data["data"]["investment_amount"] == 5_000_000.0
 
 
 def test_equity_subscription_pipeline_backfills_deal_container(db, monkeypatch):

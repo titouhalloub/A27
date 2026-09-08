@@ -142,7 +142,16 @@ class SubscriptionAgreementExtraction(BaseModel):
 
 
 class EquitySubscriptionExtraction(BaseModel):
-    """US LLC / Corp equity subscription agreement."""
+    """US LLC / Corp equity subscription agreement.
+
+    Also covers SEC-form style exhibits (Regulation D/Crowdfunding
+    subscription agreements): the issuer is often named in a preamble like
+    'Investview, Inc. (the "Company")', the offering size appears as a
+    'maximum offering of $5,000,000', the subscriber count as
+    'authorized for sale 100,000 shares', and the per-investor price as a
+    'cash purchase price of $5,000,000'. A blank Category A-H accreditation
+    form stays None -- only an explicit mark counts.
+    """
 
     schema_name: Literal["EquitySubscriptionExtraction"] = (
         "EquitySubscriptionExtraction")
@@ -155,6 +164,12 @@ class EquitySubscriptionExtraction(BaseModel):
     total_offering_amount: float | None = None
     minimum_investment: float | None = None
     currency: str | None = None
+    # --- SEC-form / subscription-specific fields -------------------------
+    share_count: int | None = None
+    subscription_price_per_share: float | None = None
+    investment_amount: float | None = None
+    accredited_investor_category: str | None = None
+    document_date: date | None = None
     source_text: str | None = None
 
 

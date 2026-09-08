@@ -343,53 +343,272 @@ def extract_capital_call(text: str) -> tuple[CapitalCallExtraction | None, float
     return extraction, confidence
 
 
-def extract_equity_subscription(text):
-    """US LLC / Corp equity subscription agreement."""
-    company_name = _clean_name(_grep(
-        r'(?:company|issuer|corporation|llc|inc)\s*name[\s:]+([^\n,]{2,80})',
+_ENTITY_SUFFIX = (
+    r"(?:Inc\.?|LLC|L\.L\.C\.?|Corp\.?|Corporation|Co\.?|Company|"
+    r"Ltd\.?|Limited|LP|L\.P\.|LLP)"
+)
+
+_MONTH_NUM = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11,
+    "december": 12,
+}
+
+
+def _clean_issuer_prefix(raw: str | None) -> str | None:
+    """Clean a company-name capture and reject junk.
+
+    SEC subscription agreements name the issuer in a wrapped preamble:
+    ``Investview, Inc. (the "Company")`` or ``5 Mile Brewing Company LLC, a
+    Michigan limited liability company (the "Company")``. Stripping those tails
+    and rejecting a bare suffix (``Inc.``, ``LLC``) is what turns a truncated
+    capture like ``Inc. (the "Company"`` back into the real entity name.
+    """
+    if not raw:
+        return None
+    name = raw.strip().strip("\"'").strip()
+    name = re.sub(
+        r'\s*\(\s*(?:the\s+)?["“”\']?Company["“”\']?\s*\)\s*$', "", name,
+        flags=re.IGNORECASE)
+    name = re.sub(
+        r"\s*\(\s*the\s*[\"“”']?Shares?[\"“”']?\s*\)\s*$", "", name,
+        flags=re.IGNORECASE)
+    name = re.sub(
+        r"\s*,\s*(?:an?\s+)?[A-Z][a-zA-Z]*\s+limited\s+liability\s+company.*$",
+        "", name, flags=re.IGNORECASE)
+    name = re.sub(
+        r"\s*,\s*(?:an?\s+)?[A-Za-z]+\s+(?:corporation|corp\.?|company).*$",
+        "", name, flags=re.IGNORECASE)
+    name = name.rstrip(" \t,;:-–—•·").strip()
+    if not name:
+        return None
+    if name.lower().lstrip("0123456789., ") in _JUNK_NAMES:
+        return None
+    if sum(ch.isalpha() for ch in name) < 2:
+        return None
+    # A capture whose whole content is an entity suffix ('Inc.', 'LLC') is
+    # the truncation bug, not a name -- and 'The Company'/'An LLC' are the
+    # document's generic self-reference, not the issuer.
+    core = re.sub(
+        r"\b(?:Inc\.?|LLC|L\.L\.C\.?|Corp\.?|Corporation|Company|Ltd\.?|"
+        r"Limited|LP|LLP)\b.*$", "", name, flags=re.IGNORECASE).strip(" ,")
+    if core.lower() in {"", "the", "a", "an"}:
+        return None
+    if not core and len(name) <= 12:
+        return None
+    return name
+
+
+def _extract_company_name(text: str) -> str | None:
+    """Entity name, tolerant of the SEC preamble conventions and OCR glue."""
+    cands: list[str | None] = []
+    # 1. Explicit label ("Company Name:", "Issuer Name:").
+    cands.append(_grep(
+        r"(?:company|issuer|corporation|llc|inc)\s*name[\s:]+([^\n]{2,120})",
         text))
-    if not company_name:
-        company_name = _clean_name(_grep(
-            r'((?:\d\s+)?[A-Z][^\n,]{2,60}(?:LLC|Inc\.?|Corporation|Corp\.?|Company|LP|LLP))',
-            text))
-    if not company_name:
-        company_name = _clean_name(_grep(
-            r'(\d[\w\s,]{2,60}(?:LLC|Inc\.?|Corporation|Corp\.?|Company|LP|LLP))',
-            text))
+    # 2. ALL-CAPS heading line ending in an entity suffix
+    #    ('5 MILE BREW COMPANY LLC' / 'INVESTVIEW, INC.'). Strongest signal:
+    #    it is the document's own title block.
+    cands.append(_grep(
+        r"(?m)^\s*([A-Z0-9][A-Z0-9 .,&\"'-]{2,60}?\b(?:INC\.?|LLC|"
+        r"CORP\.?|CORPORATION|COMPANY|LTD\.?|LIMITED|LP|LLP))\.?,?\s*$", text))
+    # 3. "(the "Company")" preamble: "Investview, Inc. (the "Company")".
+    cands.append(_grep(
+        r'([A-Z0-9][A-Za-z0-9 .,&"\'-]{2,90}?)\s*' +
+        r'\(\s*the\s*["“”\']?Company["“”\']?\s*\)', text))
+    # 4. "X, a Michigan limited liability company (the ...)".
+    cands.append(_grep(
+        r'([A-Z0-9][A-Za-z0-9 .,&"\'-]{2,90}?)\s*,\s*(?:an?\s+)?[A-Z][a-zA-Z]+'
+        r'\s+limited\s+liability\s+company', text))
+    # 5. Sentence-start entity followed by a verb of the agreement.
+    cands.append(_grep(
+        r"([A-Z][A-Za-z0-9 .,&\"'-]{2,90}?\b(?:Inc\.?|LLC|Corp\.?|Corporation|"
+        r"Company|Ltd\.?|Limited|LP|LLP)\b)\s+(?:has|is|hereby|authorized|"
+        r"will|agrees|represents)", text))
+    # 6. Digit-led entity (5 Mile Brewing Company LLC / Acme 2 LLC).
+    cands.append(_grep(
+        r"(\d[\w\s,]{2,60}(?:LLC|Inc\.?|Corporation|Corp\.?|Company|LP|"
+        r"LLP|Ltd\.?))", text))
+    for cand in cands:
+        cleaned = _clean_issuer_prefix(cand)
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _extract_state_of_incorporation(text: str) -> str | None:
+    """Name the incorporation/formation state without confusing it with the
+    governing-law state ('governed by the laws of the State of Delaware' is
+    NOT incorporation)."""
     state = _grep(
-        r'(?:state|jurisdiction)\s*(?:of\s*)?(?:incorporation|organization)'
-        r'[\s:]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)', text)
+        r"(?:state|jurisdiction)\s*(?:of\s*)?(?:incorporation|organization"
+        r"|formation)[\s:]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)", text)
     if not state:
         state = _grep(
-            r'(?:a|an)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+limited\s+liability\s+company',
-            text)
-    security = _clean_name(_grep(
-        r'(?:security|unit|share)\s*type[\s:]+([^\n,]{2,80})', text))
-    if not security:
-        m = re.search(
-            r'(?:(\d[\d,]*(?:\.\d+)?)\s*)?((?:Non-Voting\s+|Voting\s+)?(?:Common|Preferred)\s+(?:Units|Shares|Interests))',
-            text, re.IGNORECASE)
-        if m:
-            security = _clean_name(m.group(2).replace("\n", " ").strip())
-    if not security:
-        security = _clean_name(_grep(
-            r'(\d[\d,]+(?:\.\d+)?\s+[A-Za-z][^\n,]{2,60}?(?:Units|Shares|Interests))',
-            text))
-    price, _ = _money_after(text, r'(?:price\s*per|per\s*unit)', window=60)
+            r"(?:organized|incorporated|formed)[^.]{0,160}?"
+            r"under\s+the\s+laws\s+of\s+(?:the\s+[Ss]tate\s+of\s+)?"
+            r"([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)", text)
+    if not state:
+        state = _grep(
+            r"(?:a|an)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+limited\s+"
+            r"liability\s+company", text)
+    if not state:
+        state = _grep(
+            r"existing\s+under\s+the\s+laws\s+of\s+(?:the\s+[Ss]tate\s+of\s+)?"
+            r"([A-Z][a-zA-Z]+)", text)
+    return state
+def _extract_security_type(text: str) -> str | None:
+    """Security being offered/subscribed: 'Series A Preferred stock',
+    '100,000 shares (the "Shares") of Series A Preferred stock',
+    'Non-Voting Common Units'. Never returns a bare share-count string."""
+    cands: list[str | None] = []
+    cands.append(_grep(
+        r"(?:security|unit|share)\s*type[\s:]+([^\n,]{2,80})", text))
+    cands.append(_grep(
+        r"\b(Series\s+[A-Z1-9]\s+(?:[A-Za-z]+[- ])?(?:Preferred|Common)\s+"
+        r"(?:Stock|Shares?|Units|Interests))\b", text))
+    cands.append(_grep(
+        r"\d[\d,]*(?:\.\d+)?\s+shares?\s*(?:\([^)]*\))?\s+of\s+"
+        r"([A-Za-z][^,\n]{2,60})", text))
+    cands.append(_grep(
+        r"(?:(?:\d[\d,]*(?:\.\d+)?)\s*)?((?:Non-Voting\s+|Voting\s+)?"
+        r"(?:Common|Preferred)\s+(?:Units|Shares|Interests|Stock))\b", text))
+    cands.append(_grep(
+        r"\b(Preferred\s+(?:Stock|Shares?|Units|Interests))\b", text))
+    cands.append(_grep(
+        r"\b(Common\s+(?:Stock|Shares?|Units|Interests))\b", text))
+    for cand in cands:
+        cleaned = _clean_name(cand)
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _extract_share_count(text: str) -> int | None:
+    """Number of shares/units being subscribed or offered for sale.
+
+    Targets sale/subscription contexts ('authorized for sale 100,000 shares',
+    'aggregate of 1,235,000 Non-Voting Common Units') and never pre-existing
+    capitalization ('10,000,000 Units issued and outstanding').
+    """
+    m = re.search(
+        r"(?:authorized\s+(?:for\s+sale|to\s+be\s+sold)|for\s+sale|"
+        r"offer(?:ed)?\s+for\s+sale|to\s+purchase|purchase\s+of|"
+        r"subscribes?\s+for|purchased\s+hereunder)"
+        r"[^\n$]{0,80}?(\d{1,3}(?:,\d{3})*)\s+(?:shares?|units|interests)\b",
+        text, re.IGNORECASE)
+    if m:
+        return int(m.group(1).replace(",", ""))
+    m = re.search(
+        r"aggregate\s+of\s+(\d{1,3}(?:,\d{3})*)\s*[A-Za-z]*\s*"
+        r"(?:(?:Non-)?Voting\s+|Common\s+|Preferred\s+)*"
+        r"(?:Units|Shares|Interests)\b", text, re.IGNORECASE)
+    if m:
+        return int(m.group(1).replace(",", ""))
+    return None
+
+
+_AI_MARKS = r"[Xx✓✔☑■●▪✗✘]"
+
+
+def _extract_accredited_category(text: str) -> str | None:
+    """Which accredited-investor Category (A-H) the subscriber selected.
+
+    SEC subscription forms lay out Categories A-H as blanks to mark
+    ('Category A___X'). Only an explicit mark counts -- the blank template
+    ('Category A___ The undersigned is ...') stays None, never a guess.
+    """
+    for m in re.finditer(r"Category\s*([A-H])\b", text, re.IGNORECASE):
+        tail = text[m.end(): m.end() + 160]
+        if re.search(
+                r"(?:^\s*_*\s*[Xx]|\b[Xx]\b|[_\-]{2,}\s*[Xx]|"
+                r"[\[(]\s*[Xx]\s*[\])]|" + _AI_MARKS + r")", tail):
+            return f"Category {m.group(1).upper()}"
+    return None
+
+
+def _parse_doc_date(text: str) -> date | None:
+    """Document date ('May 29, 2015') -- the first valid date in the text is
+    almost always the agreement date for SEC exhibits (the title line)."""
+    m = re.search(r"\b([A-Z][a-z]{2,9})\s+(\d{1,2}),\s+(\d{4})\b", text)
+    if m:
+        month = _MONTH_NUM.get(m.group(1).lower())
+        if month:
+            try:
+                return date(int(m.group(3)), month, int(m.group(2)))
+            except ValueError:
+                return None
+    m = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", text)
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+    return None
+def extract_equity_subscription(text: str) -> tuple[EquitySubscriptionExtraction | None, float]:
+    """US LLC / Corp equity subscription agreement (incl. SEC-form exhibits).
+
+    An SEC exhibit wraps the issuer as 'Investview, Inc. (the "Company")',
+    states the offering as 'authorized for sale 100,000 shares ... of Series A
+    Preferred stock ... for the maximum offering of $5,000,000' and the
+    subscriber's price as a 'cash purchase price of $5,000,000'. When a
+    per-share price is not stated but the share count and subscription price
+    both are, the effective per-share price is their quotient -- arithmetic on
+    facts the document actually states, never a guess.
+    """
+    company_name = _extract_company_name(text)
+    state = _extract_state_of_incorporation(text)
+    security = _extract_security_type(text)
+    share_count = _extract_share_count(text)
+    price, _ = _money_after(
+        text, r"(?:price\s*per|per\s*unit|per\s*share)", window=60)
     total, cur = _money_after(
-        text, r'(?:total\s*(?:offering|issue|amount)|offering\s*amount|up\s*to|aggregate\s*of)',
+        text,
+        r"(?:total\s*(?:offering|issue|amount)|maximum\s+offering\s*|"
+        r"offering\s*amount|up\s*to|aggregate\s*of)",
         window=80)
     if total is None:
-        total, cur = _money_after(text, r'(?:offering|issue|sell)', window=100)
+        total, cur = _money_after(text, r"(?:offering|issue|sell)", window=100)
     minimum, _ = _money_after(
-        text, r'(?:minimum\s*(?:investment|subscription)|minimum\s*amount|less\s*than)',
+        text,
+        r"(?:minimum\s*(?:investment|subscription)|minimum\s*amount|"
+        r"less\s*than)",
         window=80)
-    currency = (cur or _currency_of(text) or 'USD').upper()[:3]
-    fields = [company_name, state, security, price, total, minimum]
-    found = sum(1 for f in fields if f is not None)
-    conf = found / len(fields) if fields else 0.0
-    if found == 0:
+    investment, inv_cur = _money_after(
+        text,
+        r"(?:cash\s+purchase\s+price|subscription\s+price|investment\s+amount|"
+        r"purchase\s+price|amount\s+invested)",
+        window=80)
+    # Effective per-share price from facts the document states outright.
+    if price is None and share_count and investment:
+        per_share = investment / share_count
+        if 0 < per_share <= 1_000_000:
+            price = per_share
+
+    currency = (cur or inv_cur or _currency_of(text) or "USD").upper()[:3]
+    # A '$'-prefixed amount is unambiguously dollar-denominated even when the
+    # document never spells out a currency code (Brew: '$500', '$1.00').
+    currency_found = bool(cur or inv_cur or _currency_of(text)
+                          or _DOLLAR_AMOUNT.search(text))
+    category = _extract_accredited_category(text)
+    doc_date = _parse_doc_date(text)
+
+    if not any((company_name, state, security, share_count, price,
+                total, minimum, investment)):
         return None, 0.0
+
+    # Anchors (who/what/how-much + currency) carry the confidence weight 1.0
+    # each.  Deal-shaping fields (state, per-share price, minimum) add 0.6.
+    # Detail fields (share count, subscription price, date, accreditation
+    # category) only ever ADD signal -- a blank Category A-H form, an absent
+    # minimum, or an unstated share count are honest Nones, not failures, so
+    # their absence is never penalized.
+    num = (sum(1.0 for f in (company_name, total, security, currency_found) if f)
+           + 0.6 * sum(1 for f in (state, price, minimum) if f)
+           + 0.3 * sum(1 for f in (share_count, investment, doc_date, category) if f))
+    den = 4.0 + 0.6 * 3 + 0.3 * 4
+    conf = min(1.0, num / den)
+
     return EquitySubscriptionExtraction(
         company_name=company_name,
         state_of_incorporation=state,
@@ -398,10 +617,13 @@ def extract_equity_subscription(text):
         total_offering_amount=total,
         minimum_investment=minimum,
         currency=currency,
+        share_count=share_count,
+        subscription_price_per_share=price,
+        investment_amount=investment,
+        accredited_investor_category=category,
+        document_date=doc_date,
         source_text=text[:2000],
-    ), min(conf, 1.0)
-
-
+    ), conf
 def extract_subscription(text: str) -> tuple[SubscriptionAgreementExtraction | None, float]:
     """Extract subscription agreement information.
 
