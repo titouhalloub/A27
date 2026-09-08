@@ -173,12 +173,10 @@ EQUITY_SUBSCRIPTION_KEYWORDS: set[str] = {
     "security type",
     "price per unit",
     "total offering amount",
-    "minimum investment",
     "limited liability company",
     "llc",
     "articles of organization",
     "operating agreement",
-    "subscription agreement",
     "non-voting",
     "common units",
     "preferred units",
@@ -194,6 +192,27 @@ EQUITY_SUBSCRIPTION_KEYWORDS: set[str] = {
     "units",
     "company",
     "incorporation",
+    # General share/equity vocabulary — SEC-form exhibits are corporation
+    # share subscriptions ("Investview, Inc. ... authorized for sale 100,000
+    # shares of Series A Preferred stock ... maximum offering of $5,000,000").
+    # NOTE: keep this set disjoint from SUBSCRIPTION_KEYWORDS -- keywords
+    # shared between lexicons are ambiguous evidence and count for neither
+    # class (see _AMBIGUOUS_KEYWORDS), so duplicating one here would only
+    # silence it.
+    "shares",
+    "stock",
+    "common stock",
+    "preferred stock",
+    "series a",
+    "par value",
+    "corporation",
+    "hereby subscribes",
+    "subscriber",
+    "cash purchase price",
+    "securities act",
+    "maximum offering",
+    "authorized for sale",
+    "transfer agent",
 }
 # Document types that classification can *never* produce — these are only
 # ever assigned by the ingestion layer or human triage.
@@ -247,6 +266,37 @@ def _normalise(text: str) -> str:
 
 def _keyword_score(text_normalised: str, keywords: set[str]) -> int:
     return sum(1 for kw in keywords if kw in text_normalised)
+
+
+# --- Lexicon overlap policy ------------------------------------------------
+# Keywords that appear in more than one class lexicon are ambiguous evidence:
+# "subscription agreement" is just as much fund-subscription vocabulary as
+# equity-subscription vocabulary, so letting both classes claim it inflates
+# the *wrong* class when the correct one is distinguished by its own
+# exclusive vocabulary. Ambiguous keywords count for NEITHER class.
+_LEXICONS_FOR_OVERLAP: dict[str, set[str]] = {
+    "loan": LOAN_KEYWORDS,
+    "sukuk": SUKUK_KEYWORDS,
+    "capcall": CAPITAL_CALL_KEYWORDS,
+    "subscription": SUBSCRIPTION_KEYWORDS,
+    "equity": EQUITY_SUBSCRIPTION_KEYWORDS,
+}
+_AMBIGUOUS_KEYWORDS: set[str] = set()
+_seen_once: set[str] = set()
+for _lex in _LEXICONS_FOR_OVERLAP.values():
+    for _kw in _lex:
+        if _kw in _seen_once:
+            _AMBIGUOUS_KEYWORDS.add(_kw)
+        else:
+            _seen_once.add(_kw)
+
+# The disambiguated view of each lexicon: ambiguous keywords removed, so a
+# class can only score with vocabulary that is exclusively its own.
+_EXCLUSIVE_LEXICONS: dict[str, set[str]] = {
+    name: lexicon - _AMBIGUOUS_KEYWORDS
+    for name, lexicon in _LEXICONS_FOR_OVERLAP.items()
+}
+
 
 
 # Filename abbreviation map. Uploaders compress long words
@@ -306,6 +356,20 @@ def classify_with_heuristics(text: str, filename: str = "") -> ClassificationRes
     cc_hits = _keyword_score(t, CAPITAL_CALL_KEYWORDS)
     sub_hits = _keyword_score(t, SUBSCRIPTION_KEYWORDS)
     equity_hits = _keyword_score(t, EQUITY_SUBSCRIPTION_KEYWORDS)
+
+    # Overlap policy: keywords present in more than one lexicon are
+    # ambiguous evidence and count for neither class (see the overlap
+    # policy block above the lexicon definitions). Without this, generic
+    # phrases like "subscription agreement" or "minimum investment" hand
+    # free hits to whichever lexicon also copied them, and the winning
+    # ratio formula punishes a class whose distinctive vocabulary is
+    # diluted by shared boilerplate.
+    if _AMBIGUOUS_KEYWORDS:
+        loan_hits = _keyword_score(t, _EXCLUSIVE_LEXICONS["loan"])
+        sukuk_hits = _keyword_score(t, _EXCLUSIVE_LEXICONS["sukuk"])
+        cc_hits = _keyword_score(t, _EXCLUSIVE_LEXICONS["capcall"])
+        sub_hits = _keyword_score(t, _EXCLUSIVE_LEXICONS["subscription"])
+        equity_hits = _keyword_score(t, _EXCLUSIVE_LEXICONS["equity"])
 
     # Filename keyword matches — these are deliberate uploader signals
     # ("Subscription-Agreement-...pdf") that should break ties in the
