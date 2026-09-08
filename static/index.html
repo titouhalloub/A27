@@ -55,7 +55,8 @@
   .step .label { font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--sand); }
   .step.active .label, .step.done .label { color:var(--paper); }
   .results-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:18px; }
-  @media (max-width:760px) { .results-grid{grid-template-columns:1fr;} .dashboard-grid{grid-template-columns:1fr;} }
+  .bottom-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-top:22px; }
+  @media (max-width:760px) { .results-grid{grid-template-columns:1fr;} .dashboard-grid{grid-template-columns:1fr;} .bottom-grid{grid-template-columns:1fr;} }
   .field-list { display:flex; flex-direction:column; gap:9px; }
   .field-item { display:flex; justify-content:space-between; align-items:baseline; }
   .field-item .k { font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--sand); }
@@ -116,26 +117,6 @@
 <main>
   <div class="dashboard-grid">
     <aside class="sidebar">
-      <div class="panel">
-        <h3>Cap Table</h3>
-        <div class="cap">Event-sourced — ownership computed, never stored as a snapshot.</div>
-        <button class="btn" id="captable-setup-btn" style="width:100%;">Set up a demo company</button>
-        <button class="btn ghost" id="captable-round-btn" style="width:100%; margin-top:6px;" disabled>Run a Series A round</button>
-        <div class="ct-toggle-row" style="display:flex; gap:6px; margin-top:10px;">
-          <button class="ct-toggle-btn" id="ct-view-before">Before the round</button>
-          <button class="ct-toggle-btn" id="ct-view-after" disabled>After the round</button>
-        </div>
-        <div class="ct-bar" id="ownership-bar"></div>
-        <div class="ct-legend" id="ownership-legend"></div>
-        <div class="stat-row" style="margin-top:12px;"><span class="k">Total diluted</span><span class="v" id="ct-total">—</span></div>
-        <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--amber);margin-top:10px;cursor:pointer;" id="ct-seed-hint">← Processes will auto-seed a Series A demo</div>
-      </div>
-      <div class="panel">
-        <h3>Cap Table Proposals</h3>
-        <div class="cap">Issuances read from documents, awaiting your decision</div>
-        <div id="proposals-list" class="field-list"><span class="cap">Connect, then process a document that clears both confidence gates.</span></div>
-        <button class="btn ghost" id="proposals-refresh-btn" style="width:100%; margin-top:10px;">Refresh proposals</button>
-      </div>
       <div class="panel">
         <h3>Last Result</h3>
         <div class="cap">Most recent document processed</div>
@@ -209,6 +190,31 @@
         <div id="ledger-list"></div>
         <div class="footer-note">Flowgate ships with document intake + dual-mode compliance + event-sourced cap table. Capital-call orchestration, transfer rules, vesting, and SAFE conversion math are next phase. This demo runs against your live API.</div>
       </div>
+    </div>
+  </div>
+
+  <div class="bottom-grid">
+    <div class="panel">
+      <h3>Cap Table</h3>
+      <div class="cap">Event-sourced — ownership computed, never stored as a snapshot.</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn" id="captable-setup-btn">Set up a demo company</button>
+        <button class="btn ghost" id="captable-round-btn" disabled>Run a Series A round</button>
+      </div>
+      <div class="ct-toggle-row" style="display:flex; gap:6px; margin-top:10px;">
+        <button class="ct-toggle-btn" id="ct-view-before">Before the round</button>
+        <button class="ct-toggle-btn" id="ct-view-after" disabled>After the round</button>
+      </div>
+      <div class="ct-bar" id="ownership-bar"></div>
+      <div class="ct-legend" id="ownership-legend"></div>
+      <div class="stat-row" style="margin-top:12px;"><span class="k">Total diluted</span><span class="v" id="ct-total">—</span></div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--amber);margin-top:10px;cursor:pointer;" id="ct-seed-hint">↑ Processes will auto-seed a Series A demo</div>
+    </div>
+    <div class="panel">
+      <h3>Cap Table Proposals</h3>
+      <div class="cap">Issuances read from documents, awaiting your decision</div>
+      <div id="proposals-list" class="field-list"><span class="cap">Connect, then process a document that clears both confidence gates.</span></div>
+      <button class="btn ghost" id="proposals-refresh-btn" style="width:100%; margin-top:10px;">Refresh proposals</button>
     </div>
   </div>
 </main>
