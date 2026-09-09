@@ -441,7 +441,9 @@ class CapitalCall(Base):
     instrument_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("instruments.id")
     )
-    funder_id: Mapped[str] = mapped_column(String(64), ForeignKey("investors.id"))
+    funder_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("investors.id"), nullable=True
+    )
     capital_owing: Mapped[float] = mapped_column(Float, nullable=False)
     committed_capital: Mapped[float | None] = mapped_column(Float, default=None)
     amount_due: Mapped[float] = mapped_column(Float, nullable=False)

@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import secrets
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, HTTPException, Security, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Security, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import APIKeyHeader
@@ -23,6 +23,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api_schemas import (
+    CapitalCallCreate,
+    CapitalCallOut,
+    CapitalCallReviewRequest,
     CapTableEventCreate,
     CapTableEventOut,
     CapTableOut,
@@ -53,6 +56,7 @@ from app.config import settings
 from app.db import get_session, init_db
 from app.models.enums import (
     CapTableEventType,
+    CapitalCallStatus,
     ComplianceMode,
     DocumentStatus,
     IngestionSource,
@@ -66,6 +70,7 @@ from app.models.enums import (
 from app.models.orm import (
     CapTableEvent,
     CapTableProposal,
+    CapitalCall,
     Document,
     Holding,
     Instrument,
@@ -1113,3 +1118,200 @@ def reject_cap_table_proposal(
     session.commit()
     session.refresh(proposal)
     return proposal
+
+
+# --------------------------------------------------------------------------- #
+# Capital calls -- approval parity (Phase A)
+#
+# Mirrors the cap-table proposal gate: an extracted call is PENDING_APPROVAL
+# until a named human reviewer approves it. funder_id is resolved against the
+# Investor registry at creation; a call whose funder could not be resolved
+# (no Investor row / no name) is flagged for manual review and approval of an
+# unresolved call blocks with 409. Rejects never write event facts.
+# --------------------------------------------------------------------------- #
+
+
+capital_call_out_schema = CapitalCallOut
+
+
+@app.post(
+    "/instruments/{instrument_id}/capital-calls",
+    response_model=capital_call_out_schema,
+    status_code=201,
+    responses={401: {"model": ErrorOut}},
+)
+def create_capital_call(
+    instrument_id: str,
+    payload: CapitalCallCreate,
+    session: Session = Depends(get_session),
+    _: str = Depends(require_api_key),
+) -> CapitalCall:
+    """Create a capital call notice (extracted data) pending approval.
+
+    The funder_name is matched against the Investor registry by name; if found,
+    the funder_id is resolved at creation time. If not found, funder_id stays
+    NULL and the call is flagged ``funder_unresolved`` -- the reviewer is told
+    to create the investor before approving (same semantics as the
+    ``subscriber_unresolved`` flag on cap-table proposals).
+    """
+    instrument = session.get(Instrument, instrument_id)
+    if instrument is None:
+        raise HTTPException(status_code=404, detail=f"Instrument {instrument_id!r} not found")
+
+    funder_id: str | None = None
+    funder_name: str | None = payload.funder_name
+    if funder_name:
+        resolved = session.execute(
+            select(Investor).where(Investor.name == funder_name)
+        ).scalars().first()
+        if resolved is not None:
+            funder_id = resolved.id
+
+    call = CapitalCall(
+        id=str(uuid4()),
+        instrument_id=instrument_id,
+        funder_id=funder_id,
+        capital_owing=payload.capital_owing,
+        currency=payload.currency[:3],
+        amount_due=payload.capital_owing,
+        due_date=payload.due_date,
+        wire_details=payload.wire_details,
+        source_text=payload.source_text or "",
+        status=CapitalCallStatus.PENDING_APPROVAL,
+        requires_manual_review=funder_id is None,
+    )
+    session.add(call)
+    try:
+        session.commit()
+    except Exception as exc:  # noqa: BLE001
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    session.refresh(call)
+    return call
+
+
+@app.post(
+    "/capital-calls/{call_id}/review",
+    response_model=CapitalCallOut,
+    responses={
+        401: {"model": ErrorOut},
+        404: {"model": ErrorOut},
+        409: {"model": ErrorOut},
+    },
+)
+def review_capital_call(
+    call_id: str,
+    payload: CapitalCallReviewRequest,
+    session: Session = Depends(get_session),
+    _: str = Depends(require_api_key),
+) -> CapitalCall:
+    """Named-reviewer approve/reject gate for a capital call.
+
+    Mirrors the cap-table proposal gate: a call is PENDING_APPROVAL until
+    a human reviewer confirms it. Rejects write a ledger entry but no cap-table
+    event -- capital calls track cash obligations, not ownership facts.
+
+    A fully unresolved funder (no Investor row at all) blocks approval with
+    409. A PROVISIONAL investor (created by the system from a name-match) is
+    linkable -- the reviewer sees the flag and decides.
+    """
+    call = session.get(CapitalCall, call_id)
+    if call is None:
+        raise HTTPException(
+            status_code=404, detail=f"Capital call {call_id!r} not found"
+        )
+    if call.status != CapitalCallStatus.PENDING_APPROVAL:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Capital call {call_id!r} is {call.status.value}, "
+                "not pending_approval -- a call is reviewed at most once"
+            ),
+        )
+    reviewer = payload.reviewer.strip()
+    if not reviewer:
+        raise HTTPException(status_code=409, detail="A named reviewer is required")
+
+    if payload.action == "approve":
+        if call.funder_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The capital call has no resolved funder (funder_id is NULL) -- "
+                    "create the investor and re-link before approving"
+                ),
+            )
+        call.status = CapitalCallStatus.APPROVED
+        event_type = LedgerEntryType.CAPITAL_CALL_REVIEW
+        event_detail = "capital_call_approved"
+    else:
+        call.status = CapitalCallStatus.REJECTED
+        event_type = LedgerEntryType.CAPITAL_CALL_REVIEW
+        event_detail = "capital_call_rejected"
+
+    session.add(
+        LedgerEntry(
+            id=str(uuid4()),
+            entry_type=event_type,
+            instrument_id=call.instrument_id,
+            payload={
+                "event": event_detail,
+                "capital_call_id": call.id,
+                "funder_id": call.funder_id,
+                "capital_owing": call.capital_owing,
+                "reviewer": reviewer,
+                "action": payload.action,
+            },
+        )
+    )
+    session.commit()
+    session.refresh(call)
+    return call
+
+
+@app.get(
+    "/capital-calls",
+    response_model=list[CapitalCallOut],
+    responses={401: {"model": ErrorOut}},
+)
+def list_capital_calls(
+    status_filter: CapitalCallStatus | None = Query(default=None, alias="status"),
+    session: Session = Depends(get_session),
+    _: str = Depends(require_api_key),
+) -> list[CapitalCall]:
+    """Review queue for capital calls.
+
+    ``?status=`` filters to a single lifecycle state (e.g. ``pending_approval``
+    for the call queue). Omit the filter to see all calls across all states.
+    """
+    stmt = select(CapitalCall)
+    if status_filter is not None:
+        stmt = stmt.where(CapitalCall.status == status_filter)
+    stmt = stmt.order_by(CapitalCall.created_at.desc())
+    rows = session.execute(stmt).scalars().all()
+    return list(rows)
+
+
+@app.get(
+    "/capital-calls/overdue",
+    response_model=list[CapitalCallOut],
+    responses={401: {"model": ErrorOut}},
+)
+def list_overdue_capital_calls(
+    as_of: datetime | None = None,
+    session: Session = Depends(get_session),
+    _: str = Depends(require_api_key),
+) -> list[CapitalCall]:
+    """Calls whose ``due_date`` has passed and that are still ``PENDING_APPROVAL``.
+
+    ``?as_of=`` lets the caller evaluate overdue-ness against an arbitrary point
+    in time (useful for backfill / reconciliation). Defaults to *now*.
+    """
+    cutoff = as_of or datetime.now(timezone.utc)
+    rows = session.execute(
+        select(CapitalCall)
+        .where(CapitalCall.due_date < cutoff)
+        .where(CapitalCall.status == CapitalCallStatus.PENDING_APPROVAL)
+        .order_by(CapitalCall.due_date.asc())
+    ).scalars().all()
+    return list(rows)

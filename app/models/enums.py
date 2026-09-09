@@ -107,6 +107,7 @@ class LedgerEntryType(str, Enum):
     COMPLIANCE_EVENT = "compliance_event"
     CAP_TABLE_EVENT = "cap_table_event"
     CAP_TABLE_PROPOSAL = "cap_table_proposal"
+    CAPITAL_CALL_REVIEW = "capital_call_review"  # named-reviewer approve/reject gate
 
 
 class ProposalStatus(str, Enum):

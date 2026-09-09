@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.models.enums import (
+    CapitalCallStatus,
     ComplianceMode,
     DocumentType,
     ShariahContractType,
@@ -258,3 +259,48 @@ class CapTableOut(BaseModel):
     shares_by_security: dict[str, float]
     ownership_by_holder: dict[str, float]
     positions: list[HolderPositionOut]
+
+
+# --------------------------------------------------------------------------- #
+# Capital call schemas -- Phase A approval parity
+# --------------------------------------------------------------------------- #
+
+
+class CapitalCallCreate(BaseModel):
+    """Request body for creating a capital call notice from an extracted
+    document. Mirrors the fields on CapitalCallExtraction."""
+    funder_name: str = Field(..., min_length=1)
+    currency: str = Field(default="USD", min_length=3, max_length=8)
+    capital_owing: float = Field(gt=0)
+    due_date: datetime | None = None
+    wire_details: str | None = None
+    source_text: str | None = None
+
+
+class CapitalCallOut(BaseModel):
+    """Read-side view of a CapitalCall, used by the review queue."""
+    id: str
+    instrument_id: str
+    funder_id: str | None
+    capital_owing: float
+    committed_capital: float | None
+    amount_due: float
+    currency: str
+    due_date: datetime | None
+    wire_details: str | None
+    source_text: str
+    pages_read: int | None
+    pages_total: int | None
+    confidence: float
+    status: str
+    requires_manual_review: bool
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class CapitalCallReviewRequest(BaseModel):
+    """Request body for the capital-call approval gate (Phase A)."""
+    reviewer: str = Field(..., min_length=1)
+    action: str = Field(..., pattern="^(approve|reject)$")
