@@ -516,7 +516,7 @@ def _classify_with_openai_compatible(
             "or A27_ANTHROPIC_API_KEY (paid), or use the heuristic backend."
         ) from exc
 
-    client = OpenAI(api_key=api_key, base_url=base_url, timeout=25.0)
+    client = OpenAI(api_key=api_key, base_url=base_url, timeout=55.0)
     system = (
         "You classify private-capital legal documents. Return ONLY valid JSON:\n"
         '{"document_type": "<one of term_sheet|loan_agreement|sha|ppm|lpa|'
