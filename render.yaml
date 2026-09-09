@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: flowgate
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
+    disk:
+      name: flowgate-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: A27_API_KEYS
+        sync: false
+      - key: A27_OPENROUTER_API_KEY
+        sync: false
+      - key: A27_OPENROUTER_MODEL
+        value: nvidia/nemotron-3-super-120b-a12b:free
+      - key: A27_LLM_BACKEND_PREFERENCE
+        value: openrouter
+      - key: A27_DATABASE_URL
+        value: sqlite:////var/data/a27.db
+      - key: A27_UPLOADS_DIR
+        value: /var/data/uploads
