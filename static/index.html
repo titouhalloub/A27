@@ -766,15 +766,37 @@ async function refreshProposals() {
     const proposals = await apiCall("/cap-table-proposals");
     // The investor picker needs the real investor registry -- a holder on a
     // cap-table event must always be an existing Investor row.
-    const investors = proposals.some((p) => p.status === "proposed")
-      ? await apiCall("/investors").catch(() => [])
-      : [];
+    let investors = [];
+    let investorsError = null;
+    const needsInvestors = proposals.some((p) => p.status === "proposed");
+    if (needsInvestors) {
+      try {
+        investors = await apiCall("/investors");
+      } catch (e) {
+        investorsError = e;
+      }
+    }
     proposalsPayloadById = {};
     if (!proposals.length) {
       list.innerHTML = '<span class="cap">No proposals yet. Process an equity/subscription document that clears both confidence gates.</span>';
       return;
     }
-    list.innerHTML = proposals.map((p) => {
+    // Inline registry form: creating the holder used to require the
+    // browser console. It lives here (not in the sidebar) because it is
+    // part of the review workflow, and it re-renders the queue right
+    // after creating so the new investor is immediately linkable.
+    const anyPending = proposals.some((p) => p.status === "proposed");
+    const createForm = anyPending
+      ? '<div style="border:1px dashed var(--line); border-radius:6px; padding:12px; margin-bottom:12px;">'
+        + '<div class="cap" style="margin-bottom:8px;">Holder not in the registry yet? Create the investor here, then link them on the proposal below.</div>'
+        + '<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">'
+        + '<div class="field" style="flex:2; min-width:160px;"><label>Investor name</label><input type="text" id="new-investor-name" placeholder="e.g. Dana" style="min-width:0; width:100%;" /></div>'
+        + '<div class="field" style="flex:1; min-width:120px;"><label>Type</label><select id="new-investor-type" style="background:var(--ink); border:1px solid var(--line); color:var(--paper); padding:8px 10px; border-radius:4px; font-family:var(--mono); font-size:13px;"><option value="individual">individual</option><option value="institution">institution</option><option value="fund">fund</option></select></div>'
+        + '<button class="btn" id="create-investor-btn">Create investor</button>'
+        + "</div>"
+        + "</div>"
+      : "";
+    list.innerHTML = createForm + proposals.map((p) => {
       const d = p.payload || {};
       proposalsPayloadById[p.id] = d;
       const pending = p.status === "proposed";
@@ -793,8 +815,15 @@ async function refreshProposals() {
       // Unresolved subscriber: the reviewer must link a real investor before
       // approval is possible (the API 409s otherwise). The picker lists the
       // existing investor registry; approving stays disabled until resolved.
+      // Three states: fetch failed -> loud error; empty registry -> guidance +
+      // inline create form below; otherwise the picker. An empty dropdown
+      // can no longer silently mean "the fetch broke".
       const linkControl = unresolved
-        ? '<div style="display:flex; gap:8px; margin-top:10px; align-items:center;">'
+        ? (investorsError
+          ? '<div class="err" style="margin-top:10px;">Could not load the investor registry (' + esc(investorsError.message || 'request failed') + '). Reconnect (top right) and click Refresh proposals.</div>'
+          : (investors.length === 0
+            ? '<div class="cap" style="margin-top:10px;">No investors exist on this server yet. Create one with the form above, then link it here.</div>'
+            : '<div style="display:flex; gap:8px; margin-top:10px; align-items:center;">'
           + '<select data-investor-select="' + esc(p.id) + '" style="flex:1; padding:6px; background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:4px;">'
           + '<option value="">-- link a real investor --</option>'
           + investors.map((inv) => '<option value="' + esc(inv.id) + '">' + esc(inv.name) + " (" + esc(inv.investor_type) + ")</option>").join("")
@@ -802,6 +831,7 @@ async function refreshProposals() {
           + '<button class="btn" data-link="' + esc(p.id) + '">Link investor</button>'
           + "</div>"
           + '<div class="cap" style="margin-top:6px;">Extraction never identified the subscriber from the document. Link the real investor before approving -- no guessed holder can enter the cap table.</div>'
+            ))
         : "";
       const buttons = pending
         ? '<div style="display:flex; gap:8px; margin-top:10px;">'
@@ -818,6 +848,19 @@ async function refreshProposals() {
     }).join("");
     list.querySelectorAll("[data-approve]").forEach((b) => { b.onclick = () => decideProposal(b.dataset.approve, true); });
     list.querySelectorAll("[data-reject]").forEach((b) => { b.onclick = () => decideProposal(b.dataset.reject, false); });
+    const createBtn = document.getElementById("create-investor-btn");
+    if (createBtn) {
+      createBtn.onclick = async () => {
+        const nameInput = document.getElementById("new-investor-name");
+        const typeInput = document.getElementById("new-investor-type");
+        const invName = (nameInput && nameInput.value || "").trim();
+        if (!invName) { showError("Type an investor name first."); return; }
+        try {
+          await apiCall("/investors", { method: "POST", body: JSON.stringify({ name: invName, investor_type: (typeInput && typeInput.value) || "individual" }) });
+          await refreshProposals();
+        } catch (e) { showError(e.message || "Could not create the investor."); }
+      };
+    }
     list.querySelectorAll("[data-link]").forEach((b) => {
       b.onclick = async () => {
         const proposalId = b.dataset.link;
