@@ -66,7 +66,10 @@ surface for the call queue at all.
 - A1: resolve `funder_id` against the `Investor` registry on review
   (match by name; 409 with an actionable message when unresolved —
   same semantics as the subscriber guard, adapted: a call without a
-  known funder cannot be approved).
+  known funder cannot be approved). A `PROVISIONAL` investor (created
+  by extraction) IS linkable and approvable — the flag is a warning
+  for the reviewer, not a block. Only a fully unresolved funder
+  (no investor row at all) blocks approval.
 - A2: UI panel for the call queue (pending calls with amount / currency /
   due date / funder + approve/reject with named reviewer), mirroring the
   proposals panel. No new endpoints needed — `GET /capital-calls` and
@@ -106,7 +109,9 @@ capital_call_payments:
 - C2: `POST /capital-calls/{id}/payments` (named `recorded_by`, 409
   unless the call is `APPROVED`; ledger entry per payment) and call
   status derivation (`UNPAID` / `PARTIAL` / `PAID` computed from
-  `sum(payments) vs amount_due` — derived, never stored).
+  `sum(payments) vs amount_due` — derived, never stored; expose
+  `remaining = max(0, amount_due - paid)` alongside the status so the
+  UI never recomputes it differently).
 - C3: UI: per-call payment list + record-payment form in the Phase A
   panel.
 - Tests: partial then full payment → derived status transitions;
@@ -119,8 +124,9 @@ Bylaws / ROFR / board-approval gates evaluated against proposed
 `TRANSFER` events. Explicitly **not** part of this plan beyond this
 paragraph: it needs a rule-schema design (condition / gate / approver /
 escalation), a storage model, an evaluation point in the event-write
-path, and UI for rule authoring. Write that design doc when Phase C
-ships. Do not start it here.
+path, and UI for rule authoring. Trigger: start the design doc when a
+pilot customer brings concrete transfer-rule requirements — not before.
+Write that design doc when Phase C ships. Do not start it here.
 
 ---
 
