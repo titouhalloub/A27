@@ -265,8 +265,8 @@ document.getElementById("conn-toggle").onclick = () => {
   document.getElementById("settings").classList.toggle("open");
 };
 document.getElementById("connect-btn").onclick = async () => {
-  API_BASE = document.getElementById("api-base").value.replace(/\/$/, "");
-  API_KEY = document.getElementById("api-key").value;
+  API_BASE = document.getElementById("api-base").value.trim().replace(/\/$/, "");
+  API_KEY = document.getElementById("api-key").value.trim();
   const dot = document.getElementById("conn-dot");
   const text = document.getElementById("conn-text");
   try {
