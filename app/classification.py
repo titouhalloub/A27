@@ -516,7 +516,7 @@ def _classify_with_openai_compatible(
             "or A27_ANTHROPIC_API_KEY (paid), or use the heuristic backend."
         ) from exc
 
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    client = OpenAI(api_key=api_key, base_url=base_url, timeout=25.0)
     system = (
         "You classify private-capital legal documents. Return ONLY valid JSON:\n"
         '{"document_type": "<one of term_sheet|loan_agreement|sha|ppm|lpa|'
@@ -533,13 +533,17 @@ def _classify_with_openai_compatible(
         '{"document_type": "unclassified", "confidence": <0.0-1.0>}.\n'
         'Return ONLY the JSON, no explanation.'
     )
+    # Keep the LLM input bounded: classification needs the head of the
+    # document, not 20k chars. A smaller prompt answers faster, which is
+    # what keeps Render's proxy from 502ing on free-tier cold starts.
+    snippet = text[:8000]
     resp = client.chat.completions.create(
         model=model,
         max_tokens=256,
         temperature=0.0,
         messages=[
             {"role": "system", "content": system},
-            {"role": "user", "content": text[:20000]},
+            {"role": "user", "content": snippet},
         ],
     )
     raw = resp.choices[0].message.content.strip() if resp.choices else ""
@@ -553,7 +557,7 @@ def _classify_with_openai_compatible(
             temperature=0.0,
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user", "content": text[:20000]},
+                {"role": "user", "content": snippet},
             ],
         )
         raw = resp.choices[0].message.content.strip() if resp.choices else ""
