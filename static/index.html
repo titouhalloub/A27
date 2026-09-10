@@ -966,7 +966,8 @@ async function refreshCapitalCalls() {
       const fmt = (n) => (n != null ? Number(n).toLocaleString() : "—");
       const fmtDate = (d) => (d ? String(d).replace("T", " ").slice(0, 10) : "—");
       const rows = [
-        ["Funder", c.funder_id ? "(linked by name)" : "(unresolved -- no investor row)"],
+        ["Funder", c.funder_name
+          || (c.funder_id ? "(linked -- registry name lookup failed)" : "(unresolved -- no investor row)")],
         ["Owing", fmt(c.capital_owing) + " " + (c.currency || "USD")],
         ["Due", fmtDate(c.due_date)],
         ["Manual review", c.requires_manual_review ? "reviewer check required" : "auto-clear"],

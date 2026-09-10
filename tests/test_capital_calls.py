@@ -63,6 +63,9 @@ def test_create_capital_call_resolves_funder_by_name(client):
     assert r.status_code == 201
     body = r.json()
     assert body["funder_id"] is not None
+    # Read-side resolution: the funder's registry name rides along so
+    # clients never have to map a funder_id UUID themselves.
+    assert body["funder_name"] == "Dana White"
     assert body["status"] == CapitalCallStatus.PENDING_APPROVAL.value
     assert body["requires_manual_review"] is False
     assert body["amount_due"] == 500_000.0
@@ -74,6 +77,7 @@ def test_create_capital_call_leaves_funder_unresolved_when_not_in_registry(clien
     assert r.status_code == 201
     body = r.json()
     assert body["funder_id"] is None
+    assert body["funder_name"] is None
     assert body["status"] == CapitalCallStatus.PENDING_APPROVAL.value
     assert body["requires_manual_review"] is True
 
@@ -99,7 +103,9 @@ def test_approve_capital_call_with_resolved_funder(client):
         json={"reviewer": "Alice Auditor", "action": "approve"},
     )
     assert r.status_code == 200
-    assert r.json()["status"] == CapitalCallStatus.APPROVED.value
+    body = r.json()
+    assert body["status"] == CapitalCallStatus.APPROVED.value
+    assert body["funder_name"] == "Dana White"
     ledger = client.get(f"/instruments/{inst['id']}/ledger", headers=HEADERS).json()
     review_entries = [e for e in ledger if e["entry_type"] == "capital_call_review"]
     assert review_entries
@@ -219,6 +225,13 @@ def test_list_capital_calls_filtered_by_status(client):
     )
     assert r.status_code == 200
     assert all(c["status"] == CapitalCallStatus.APPROVED.value for c in r.json())
+    # The approved call resolves to its registry name on the list too.
+    approved = next(c for c in r.json() if c["id"] == pending["id"])
+    assert approved["funder_name"] == "Dana White"
+    # The unresolved one stays nameless even in a queue listing.
+    r = client.get("/capital-calls", headers=HEADERS)
+    unresolved = next(c for c in r.json() if c["funder_id"] is None)
+    assert unresolved["funder_name"] is None
 
 
 def test_list_capital_calls_no_filter_returns_all(client):

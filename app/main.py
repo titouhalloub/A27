@@ -1134,6 +1134,33 @@ def reject_cap_table_proposal(
 capital_call_out_schema = CapitalCallOut
 
 
+def _capital_calls_out(
+    session: Session, calls: list[CapitalCall]
+) -> list[CapitalCallOut]:
+    """Shape calls for the read side: attach each funder's registry name so a
+    queue card can show *who* owes instead of an opaque ``funder_id`` UUID.
+
+    The name is never stored on the call row -- the FK is the source of truth,
+    so renames stay correct. One batched lookup for the whole page, never one
+    query per row. A ``funder_id`` whose Investor row has since vanished yields
+    ``funder_name=None`` while ``funder_id`` stays set: the client can flag
+    that honestly instead of pretending the link is intact.
+    """
+    ids = {c.funder_id for c in calls if c.funder_id}
+    names: dict[str, str] = {}
+    if ids:
+        rows = session.execute(
+            select(Investor.id, Investor.name).where(Investor.id.in_(ids))
+        ).all()
+        names = {row[0]: row[1] for row in rows}
+    outs = []
+    for c in calls:
+        out = CapitalCallOut.model_validate(c)
+        out.funder_name = names.get(c.funder_id) if c.funder_id else None
+        outs.append(out)
+    return outs
+
+
 @app.post(
     "/instruments/{instrument_id}/capital-calls",
     response_model=capital_call_out_schema,
@@ -1145,7 +1172,7 @@ def create_capital_call(
     payload: CapitalCallCreate,
     session: Session = Depends(get_session),
     _: str = Depends(require_api_key),
-) -> CapitalCall:
+) -> CapitalCallOut:
     """Create a capital call notice (extracted data) pending approval.
 
     The funder_name is matched against the Investor registry by name; if found,
@@ -1187,7 +1214,7 @@ def create_capital_call(
         session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     session.refresh(call)
-    return call
+    return _capital_calls_out(session, [call])[0]
 
 
 @app.post(
@@ -1204,7 +1231,7 @@ def review_capital_call(
     payload: CapitalCallReviewRequest,
     session: Session = Depends(get_session),
     _: str = Depends(require_api_key),
-) -> CapitalCall:
+) -> CapitalCallOut:
     """Named-reviewer approve/reject gate for a capital call.
 
     Mirrors the cap-table proposal gate: a call is PENDING_APPROVAL until
@@ -1266,7 +1293,7 @@ def review_capital_call(
     )
     session.commit()
     session.refresh(call)
-    return call
+    return _capital_calls_out(session, [call])[0]
 
 
 @app.get(
@@ -1278,18 +1305,19 @@ def list_capital_calls(
     status_filter: CapitalCallStatus | None = Query(default=None, alias="status"),
     session: Session = Depends(get_session),
     _: str = Depends(require_api_key),
-) -> list[CapitalCall]:
+) -> list[CapitalCallOut]:
     """Review queue for capital calls.
 
     ``?status=`` filters to a single lifecycle state (e.g. ``pending_approval``
     for the call queue). Omit the filter to see all calls across all states.
+    Each call carries ``funder_name`` resolved from the registry at read time.
     """
     stmt = select(CapitalCall)
     if status_filter is not None:
         stmt = stmt.where(CapitalCall.status == status_filter)
     stmt = stmt.order_by(CapitalCall.created_at.desc())
     rows = session.execute(stmt).scalars().all()
-    return list(rows)
+    return _capital_calls_out(session, list(rows))
 
 
 @app.get(
@@ -1301,7 +1329,7 @@ def list_overdue_capital_calls(
     as_of: datetime | None = None,
     session: Session = Depends(get_session),
     _: str = Depends(require_api_key),
-) -> list[CapitalCall]:
+) -> list[CapitalCallOut]:
     """Calls whose ``due_date`` has passed and that are still ``PENDING_APPROVAL``.
 
     ``?as_of=`` lets the caller evaluate overdue-ness against an arbitrary point
@@ -1314,4 +1342,4 @@ def list_overdue_capital_calls(
         .where(CapitalCall.status == CapitalCallStatus.PENDING_APPROVAL)
         .order_by(CapitalCall.due_date.asc())
     ).scalars().all()
-    return list(rows)
+    return _capital_calls_out(session, list(rows))

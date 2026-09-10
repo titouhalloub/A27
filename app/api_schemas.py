@@ -282,6 +282,10 @@ class CapitalCallOut(BaseModel):
     id: str
     instrument_id: str
     funder_id: str | None
+    # Resolved from the Investor registry at READ time (never stored on the
+    # call row -- the FK is the source of truth). Lets any client show who
+    # owes without shipping the whole registry to the browser.
+    funder_name: str | None = None
     capital_owing: float
     committed_capital: float | None
     amount_due: float
