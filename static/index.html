@@ -218,6 +218,28 @@
       <div id="proposals-list" class="field-list"><span class="cap">Connect, then process a document that clears both confidence gates.</span></div>
       <button class="btn ghost" id="proposals-refresh-btn" style="width:100%; margin-top:10px;">Refresh proposals</button>
     </div>
+    <div class="panel" style="grid-column:1 / -1;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+        <div>
+          <h3>Capital Calls</h3>
+          <div class="cap">Obligations read from notices, awaiting your decision</div>
+        </div>
+        <div style="display:flex; gap:10px; align-items:center;">
+          <span id="capital-calls-overdue-badge" style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--amber);display:none;"></span>
+          <button class="btn ghost" id="capital-calls-refresh-btn">Refresh calls</button>
+        </div>
+      </div>
+      <div id="capital-calls-list" class="field-list"><span class="cap">Connect, then record a capital call notice below to start the queue.</span></div>
+      <div style="border:1px dashed var(--line); border-radius:6px; padding:12px; margin-top:12px;">
+        <div class="cap" style="margin-bottom:8px;">Record a capital call notice for the current instrument. Funders are matched against the investor registry by name at creation &#8212; create the investor first, then record the call.</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+          <div class="field" style="flex:2; min-width:150px;"><label>Funder name</label><input type="text" id="cc-funder-name" placeholder="e.g. Dana / Ghost LP" style="min-width:0; width:100%;" /></div>
+          <div class="field" style="flex:1; min-width:110px;"><label>Owing (USD)</label><input type="number" id="cc-capital-owing" placeholder="500000" min="0" step="0.01" style="min-width:0; width:100%;" /></div>
+          <div class="field" style="flex:1; min-width:150px;"><label>Due date</label><input type="date" id="cc-due-date" style="min-width:0; width:100%;" /></div>
+          <button class="btn" id="create-capital-call-btn">Create call</button>
+        </div>
+      </div>
+    </div>
   </div>
 </main>
 
@@ -425,6 +447,7 @@ async function runProcessing() {
         });
       } catch (_) { /* not proposal-eligible -- nothing to show */ }
       refreshProposals();
+      refreshCapitalCalls();
     }
   } catch (e) {
     clearInterval(iv);
@@ -904,6 +927,121 @@ async function decideProposal(proposalId, approve) {
 }
 
 document.getElementById("proposals-refresh-btn").onclick = refreshProposals;
+
+// --------------------------------------------------------------------- //
+// Capital calls -- obligation queue (Phase A panel)
+// --------------------------------------------------------------------- //
+// Calls are cash obligations, not ownership facts: they live in their own
+// table and go through their own gate. A call stays PENDING_APPROVAL until a
+// named human reviewer decides; approving a call with no resolved funder
+// (no investor row) is impossible -- the API 409s, mirroring the subscriber
+// guard on proposals. Funders are matched against the investor registry by
+// name at creation time, so unresolved calls need the investor created first.
+
+async function refreshCapitalCalls() {
+  if (!API_BASE || !API_KEY) return;
+  const list = document.getElementById("capital-calls-list");
+  const badge = document.getElementById("capital-calls-overdue-badge");
+  try {
+    const calls = await apiCall("/capital-calls");
+    if (!calls.length) {
+      list.innerHTML = '<span class="cap">No capital calls yet. Record a notice below to start the queue.</span>';
+      badge.style.display = "none";
+      return;
+    }
+    // B2: overdue badge -- calls whose due date passed while still pending.
+    let overdueCount = 0;
+    try {
+      overdueCount = (await apiCall("/capital-calls/overdue")).length;
+    } catch (_) { /* badge is cosmetic -- never block the queue on it */ }
+    if (overdueCount > 0) {
+      badge.style.display = "inline";
+      badge.textContent = overdueCount + (overdueCount === 1 ? " call overdue" : " calls overdue");
+    } else {
+      badge.style.display = "none";
+    }
+    list.innerHTML = calls.map((c) => {
+      const pending = c.status === "pending_approval";
+      const unresolved = pending && !c.funder_id;
+      const fmt = (n) => (n != null ? Number(n).toLocaleString() : "—");
+      const fmtDate = (d) => (d ? String(d).replace("T", " ").slice(0, 10) : "—");
+      const rows = [
+        ["Funder", c.funder_id ? "(linked by name)" : "(unresolved -- no investor row)"],
+        ["Owing", fmt(c.capital_owing) + " " + (c.currency || "USD")],
+        ["Due", fmtDate(c.due_date)],
+        ["Manual review", c.requires_manual_review ? "reviewer check required" : "auto-clear"],
+      ].filter(([, v]) => v != null && v !== "")
+        .map(([k, v]) => '<div class="stat-row"><span class="k">' + esc(k) + '</span><span class="v">' + esc(v) + "</span></div>")
+        .join("");
+      const unresolvedNote = unresolved
+        ? '<div class="cap" style="margin-top:6px; color:var(--amber);">No funder to approve: the system could not match a registry investor by name at creation. Create the investor (Cap Table Proposals panel) and re-record the call.</div>'
+        : "";
+      const buttons = pending
+        ? '<div style="display:flex; gap:8px; margin-top:10px;">'
+          + '<button class="btn" data-approve-cc="' + esc(c.id) + '"' + (unresolved ? ' disabled title="This call has no resolved funder -- the API rejects approval."' : "") + ">Approve</button>"
+          + '<button class="btn ghost" data-reject-cc="' + esc(c.id) + '">Reject</button>'
+          + "</div>"
+        : "";
+      const stateBadge = pending
+        ? '<span style="color:var(--amber);">PENDING DECISION</span>'
+        : '<span style="color:var(--sand);">' + esc(c.status.toUpperCase()) + "</span>";
+      return '<div style="border:1px solid var(--line); border-radius:6px; padding:12px; margin-bottom:10px;">'
+        + '<div class="cap">capital_call_notice &middot; ' + stateBadge + "</div>"
+        + rows + unresolvedNote + buttons + "</div>";
+    }).join("");
+    list.querySelectorAll("[data-approve-cc]").forEach((b) => { b.onclick = () => decideCapitalCall(b.dataset.approveCc, "approve"); });
+    list.querySelectorAll("[data-reject-cc]").forEach((b) => { b.onclick = () => decideCapitalCall(b.dataset.rejectCc, "reject"); });
+  } catch (e) {
+    list.innerHTML = "";
+    showError(e.message || "Could not load capital calls.");
+  }
+}
+
+async function decideCapitalCall(callId, action) {
+  const reviewer = (prompt("Your name (recorded as the reviewer on this decision):") || "").trim();
+  if (!reviewer) return; // a named reviewer is required, no silent decisions
+  try {
+    await apiCall(`/capital-calls/${callId}/review`, {
+      method: "POST",
+      body: JSON.stringify({ reviewer, action }),
+    });
+    await refreshCapitalCalls();
+  } catch (e) { showError(e.message || "Could not record the decision."); }
+}
+
+document.getElementById("capital-calls-refresh-btn").onclick = refreshCapitalCalls;
+
+document.getElementById("create-capital-call-btn").onclick = async () => {
+  if (!API_BASE || !API_KEY) { showError("Connect to an API instance first (top right)."); return; }
+  if (!currentInstrumentId) { showError("Process a document first -- the call is recorded against the current instrument."); return; }
+  const funderName = document.getElementById("cc-funder-name").value.trim();
+  const owing = parseFloat(document.getElementById("cc-capital-owing").value);
+  const dueInput = document.getElementById("cc-due-date").value;
+  const btn = document.getElementById("create-capital-call-btn");
+  if (!funderName) { showError("Type the funder name as it appears in the registry (if it exists)."); return; }
+  if (!(owing > 0)) { showError("Enter a positive capital owing amount."); return; }
+  btn.disabled = true;
+  btn.textContent = "Creating...";
+  try {
+    await apiCall(`/instruments/${currentInstrumentId}/capital-calls`, {
+      method: "POST",
+      body: JSON.stringify({
+        funder_name: funderName,
+        currency: "USD",
+        capital_owing: owing,
+        due_date: dueInput ? dueInput + "T00:00:00" : null,
+        wire_details: "",
+        source_text: "Capital Call Notice (recorded from the demo panel)",
+      }),
+    });
+    await refreshCapitalCalls();
+  } catch (e) {
+    showError(e.message || "Could not create the capital call.");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Create call";
+  }
+};
 
 function renderCapTable(data) {
   const colors = ["gold","teal","ember","sand"];
